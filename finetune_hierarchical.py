@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""
+End-to-End Supervised Fine-Tuning & Benchmarking (UFPR-VeSV)
+===========================================================
+Trains Vision Transformers and modern CNN backbones end-to-end for fine-grained
+vehicle categorization (Type: 14, Make: 26, Model: 136).
+Supports three scientific regimes:
+1. Direct Fine-Tuning from ImageNet pretrained weights (baseline).
+2. Fine-Tuning initialized from LeJEPA + SIGReg self-supervised checkpoints.
+3. Training from scratch (random initialization).
+Automatically logs configs, metrics, and summary rows to results/benchmark_summary.csv.
+"""
+
+import argparse
+import math
+import os
+import random
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
+import torchvision.transforms as transforms
+
+from datasets.ufpr_dataset import UFPRDataset, get_eval_transform
+from models.lejepa_module import LeJEPAEncoder
+from evaluate_hierarchical import (
+    VehicleTaxonomy,
+    compute_hierarchical_metrics,
+    format_marginal_report,
+    print_marginal_report,
+)
+from utils.results_logger import save_experiment_result
+
+
+class HierarchicalClassifier(nn.Module):
+    """
+    End-to-End Hierarchical Classification Model:
+    Backbone (Encoder) + 3 Decision Heads (Type: 14, Make: 26, Model: 136).
+    """
+
+    def __init__(
+        self,
+        backbone_name: str = "tf_efficientnetv2_m.in21k_ft_in1k",
+        pretrained: bool = True,
+        checkpoint_encoder_path: str = "",
+        dropout: float = 0.2,
+        num_types: int = 14,
+        num_makes: int = 26,
+        num_models: int = 136,
+    ) -> None:
+        super().__init__()
+        self.encoder = LeJEPAEncoder(backbone_name=backbone_name, pretrained=pretrained)
+        self.embed_dim = self.encoder.embed_dim
+
+        # Load LeJEPA pre-trained encoder weights if provided
+        if checkpoint_encoder_path and os.path.isfile(checkpoint_encoder_path):
+            print(f"[*] Loading LeJEPA pretrained weights from: {checkpoint_encoder_path}")
+            ckpt = torch.load(checkpoint_encoder_path, map_location="cpu")
+            if isinstance(ckpt, dict) and "encoder_state_dict" in ckpt:
+                self.encoder.load_state_dict(ckpt["encoder_state_dict"])
+            elif isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                encoder_keys = {
+                    k.replace("encoder.", "").replace("module.encoder.", ""): v
+                    for k, v in ckpt["model_state_dict"].items()
+                    if "encoder." in k
+                }
+                if encoder_keys:
+                    self.encoder.load_state_dict(encoder_keys)
+                else:
+                    self.encoder.load_state_dict(ckpt["model_state_dict"], strict=False)
+            else:
+                self.encoder.load_state_dict(ckpt, strict=False)
+            print("[✓] Encoder successfully initialized from LeJEPA pre-trained representations!")
+
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.head_type = nn.Linear(self.embed_dim, num_types)
+        self.head_make = nn.Linear(self.embed_dim, num_makes)
+        self.head_model = nn.Linear(self.embed_dim, num_models)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        feats = self.encoder(x)
+        feats = self.dropout(feats)
+        return self.head_type(feats), self.head_make(feats), self.head_model(feats)
+
+
+def get_train_transforms(img_size: int = 224) -> transforms.Compose:
+    """Data augmentations for supervised fine-tuning."""
+    return transforms.Compose([
+        transforms.RandomResizedCrop(img_size, scale=(0.7, 1.0), interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+        transforms.RandomGrayscale(p=0.15),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="End-to-End Supervised Fine-Tuning & Evaluation on UFPR-VeSV"
+    )
+
+    # Dataset & Paths
+    parser.add_argument("--data_dir", type=str, default="./UFPR-VeSV", help="Root directory of dataset")
+    parser.add_argument("--split_fold", type=int, default=0, help="Split fold index (0 to 9)")
+    parser.add_argument("--output_dir", type=str, default="./checkpoints_finetune", help="Directory to save checkpoints")
+    parser.add_argument("--results_dir", type=str, default="./results", help="Directory where experiment logs/CSV are saved")
+    parser.add_argument("--exp_name", type=str, default="", help="Custom experiment name for results tracking")
+    parser.add_argument(
+        "--lejepa_checkpoint",
+        type=str,
+        default="",
+        help="Optional LeJEPA SSL checkpoint path to initialize encoder from",
+    )
+
+    # Architecture
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="tf_efficientnetv2_m.in21k_ft_in1k",
+        help="Model architecture name (e.g. tf_efficientnetv2_m.in21k_ft_in1k, swinv2_base_window12to16_192to256, convnext_base, resnet50)",
+    )
+    parser.add_argument("--pretrained", action="store_true", help="Use ImageNet pretrained weights")
+    parser.add_argument("--img_size", type=int, default=224, help="Input image resolution")
+    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate before classifier heads")
+
+    # Optimization
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
+    parser.add_argument("--lr_backbone", type=float, default=3e-5, help="Learning rate for backbone")
+    parser.add_argument("--lr_head", type=float, default=5e-4, help="Learning rate for classifier heads")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW")
+    parser.add_argument("--epochs", type=int, default=30, help="Fine-tuning epochs")
+    parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear warmup epochs")
+    parser.add_argument("--amp", action="store_true", help="Enable automatic mixed precision (FP16)")
+    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+
+    return parser.parse_args()
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+
+
+def setup_distributed() -> Tuple[bool, int, int, int]:
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        is_distributed = True
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl", init_method="env://")
+    else:
+        is_distributed = False
+        rank, local_rank, world_size = 0, 0, 1
+    return is_distributed, rank, local_rank, world_size
+
+
+def cleanup_distributed(is_distributed: bool) -> None:
+    if is_distributed and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+@torch.no_grad()
+def evaluate_model(
+    model: nn.Module,
+    loader: DataLoader,
+    taxonomy: VehicleTaxonomy,
+    device: torch.device,
+) -> Dict[str, Any]:
+    """Evaluates the full model and computes all taxonomic metrics."""
+    model.eval()
+    all_pred_type: List[torch.Tensor] = []
+    all_pred_make: List[torch.Tensor] = []
+    all_pred_model: List[torch.Tensor] = []
+    all_true_type: List[torch.Tensor] = []
+    all_true_make: List[torch.Tensor] = []
+    all_true_model: List[torch.Tensor] = []
+    all_is_ir: List[torch.Tensor] = []
+
+    raw_model = model.module if hasattr(model, "module") else model
+
+    for images, meta in loader:
+        images = images.to(device, non_blocking=True)
+        out_t, out_m, out_mo = raw_model(images)
+
+        all_pred_type.append(out_t.argmax(dim=-1).cpu())
+        all_pred_make.append(out_m.argmax(dim=-1).cpu())
+        all_pred_model.append(out_mo.argmax(dim=-1).cpu())
+
+        all_true_type.append(meta["target_type"].cpu())
+        all_true_make.append(meta["target_make"].cpu())
+        all_true_model.append(meta["target_model"].cpu())
+        all_is_ir.append(meta["is_infrared"].cpu())
+
+    pred_type = torch.cat(all_pred_type, dim=0)
+    pred_make = torch.cat(all_pred_make, dim=0)
+    pred_model = torch.cat(all_pred_model, dim=0)
+    true_type = torch.cat(all_true_type, dim=0)
+    true_make = torch.cat(all_true_make, dim=0)
+    true_model = torch.cat(all_true_model, dim=0)
+    is_ir = torch.cat(all_is_ir, dim=0)
+
+    metrics = compute_hierarchical_metrics(
+        pred_type=pred_type,
+        pred_make=pred_make,
+        pred_model=pred_model,
+        true_type=true_type,
+        true_make=true_make,
+        true_model=true_model,
+        is_infrared=is_ir,
+        taxonomy=taxonomy,
+        prefix="Fine-Tuning",
+    )
+    return metrics
+
+
+def main() -> None:
+    args = parse_args()
+    is_distributed, rank, local_rank, world_size = setup_distributed()
+    is_main_process = (rank == 0)
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    set_seed(args.seed + rank)
+
+    data_dir = Path(args.data_dir)
+    taxonomy = VehicleTaxonomy(data_dir / "annotations.json")
+
+    if is_main_process:
+        print("=" * 80)
+        print(f"END-TO-END SUPERVISED FINE-TUNING - FOLD {args.split_fold}")
+        print("=" * 80)
+        print(f"Backbone: {args.backbone} | Resolution: {args.img_size}x{args.img_size}")
+        print(f"Weight Origin: {'LeJEPA Checkpoint: ' + args.lejepa_checkpoint if args.lejepa_checkpoint else ('ImageNet Pretrained' if args.pretrained else 'From Scratch')}")
+        print(f"LR Backbone: {args.lr_backbone:.2e} | LR Heads: {args.lr_head:.2e} | Epochs: {args.epochs}")
+        print(f"Batch Size: {args.batch_size} per GPU (Global: {args.batch_size * world_size}) | AMP: {args.amp}")
+        print("=" * 80)
+
+    # 1. Datasets & Loaders
+    train_transform = get_train_transforms(img_size=args.img_size)
+    eval_transform = get_eval_transform(img_size=args.img_size)
+
+    train_dataset = UFPRDataset(
+        root_dir=args.data_dir,
+        split_fold=args.split_fold,
+        subset="train",
+        transform=train_transform,
+        is_pretrain=False,
+    )
+    val_dataset = UFPRDataset(
+        root_dir=args.data_dir,
+        split_fold=args.split_fold,
+        subset="val",
+        transform=eval_transform,
+        is_pretrain=False,
+    )
+    test_dataset = UFPRDataset(
+        root_dir=args.data_dir,
+        split_fold=args.split_fold,
+        subset="test",
+        transform=eval_transform,
+        is_pretrain=False,
+    )
+
+    sampler = DistributedSampler(train_dataset, shuffle=True) if is_distributed else None
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=(sampler is None),
+        sampler=sampler,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size * 2,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size * 2,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
+    # 2. Model
+    model = HierarchicalClassifier(
+        backbone_name=args.backbone,
+        pretrained=args.pretrained,
+        checkpoint_encoder_path=args.lejepa_checkpoint,
+        dropout=args.dropout,
+        num_types=taxonomy.num_types,
+        num_makes=taxonomy.num_makes,
+        num_models=taxonomy.num_models,
+    ).to(device)
+
+    if is_distributed:
+        model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
+
+    # 3. Differential Learning Rates
+    raw_model = model.module if hasattr(model, "module") else model
+    optimizer_grouped_parameters = [
+        {"params": raw_model.encoder.parameters(), "lr": args.lr_backbone},
+        {"params": list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters()), "lr": args.lr_head},
+    ]
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
+    criterion = nn.CrossEntropyLoss()
+
+    output_dir = Path(args.output_dir)
+    if is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    best_val_exact = 0.0
+
+    # 4. Training Loop
+    for epoch in range(1, args.epochs + 1):
+        if is_distributed and sampler is not None:
+            sampler.set_epoch(epoch)
+
+        model.train()
+        total_loss = 0.0
+        start_time = time.time()
+
+        for step, (images, meta) in enumerate(train_loader):
+            images = images.to(device, non_blocking=True)
+            y_t = meta["target_type"].to(device, non_blocking=True)
+            y_m = meta["target_make"].to(device, non_blocking=True)
+            y_mo = meta["target_model"].to(device, non_blocking=True)
+
+            optimizer.zero_grad()
+
+            if args.amp and device.type == "cuda":
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                    out_t, out_m, out_mo = model(images)
+                    loss = criterion(out_t, y_t) + criterion(out_m, y_m) + criterion(out_mo, y_mo)
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                out_t, out_m, out_mo = model(images)
+                loss = criterion(out_t, y_t) + criterion(out_m, y_m) + criterion(out_mo, y_mo)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                optimizer.step()
+
+            total_loss += loss.item()
+
+        scheduler.step()
+
+        # Validation
+        if is_main_process and (epoch % 2 == 0 or epoch == args.epochs):
+            elapsed = time.time() - start_time
+            val_metrics = evaluate_model(model, val_loader, taxonomy, device)
+
+            print(
+                f"Epoch [{epoch:02d}/{args.epochs:02d}] "
+                f"Loss: {total_loss/len(train_loader):.4f} | "
+                f"Val Marginal Acc: {val_metrics['marginal_acc']:.2f}% "
+                f"(T: {val_metrics['acc_type']:.2f}%, M: {val_metrics['acc_make']:.2f}%, Mo: {val_metrics['acc_model']:.2f}%) | "
+                f"Exact Tuple: {val_metrics['acc_exact_match']:.2f}% | "
+                f"Invalid: {val_metrics['pct_invalid_total']:.2f}% ({elapsed:.1f}s)"
+            )
+
+            if val_metrics["acc_exact_match"] > best_val_exact:
+                best_val_exact = val_metrics["acc_exact_match"]
+                best_ckpt_path = output_dir / f"best_model_fold{args.split_fold}.pth"
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": raw_model.state_dict(),
+                        "metrics": val_metrics,
+                        "args": vars(args),
+                    },
+                    best_ckpt_path,
+                )
+
+    # 5. Final Test Split Evaluation & Auto-Logging
+    if is_main_process:
+        print("\n" + "=" * 80)
+        print("FINAL EVALUATION ON TEST SPLIT")
+        print("=" * 80)
+        best_ckpt = torch.load(output_dir / f"best_model_fold{args.split_fold}.pth", map_location=device)
+        raw_model.load_state_dict(best_ckpt["model_state_dict"])
+        test_metrics = evaluate_model(model, test_loader, taxonomy, device)
+        report_text = format_marginal_report(test_metrics)
+        print(report_text)
+
+        exp_name = args.exp_name if args.exp_name else f"ft_{args.backbone}_fold{args.split_fold}"
+        save_experiment_result(
+            experiment_name=exp_name,
+            config=args,
+            metrics=test_metrics,
+            report_text=report_text,
+            output_root=args.results_dir,
+        )
+
+    cleanup_distributed(is_distributed)
+
+
+if __name__ == "__main__":
+    main()

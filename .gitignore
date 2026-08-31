@@ -1,0 +1,35 @@
+# Environments & Virtual Envs
+.venv/
+venv/
+env/
+ENV/
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Semi-Private Dataset (Do NOT commit dataset files)
+UFPR-VeSV/
+*.json
+!annotations.json.example
+images/
+splits/
+
+# Model Checkpoints & Large Weights
+checkpoints/
+checkpoints_*/
+*.pth
+*.pt
+extracted_embeddings/
+
+# Output Results (Keep benchmark_summary.csv and folder structure, ignore huge artifacts if any)
+# results/
+
+# IDE & OS Files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
