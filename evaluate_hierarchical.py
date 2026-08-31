@@ -341,6 +341,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data_dir", type=str, default="./UFPR-VeSV", help="Root directory of UFPR-VeSV dataset")
     parser.add_argument("--embeddings_file", type=str, required=True, help="Path to extracted embeddings .pt file")
+    parser.add_argument("--backbone", type=str, default="", help="Backbone model architecture (auto-detected from embeddings file if omitted)")
+    parser.add_argument("--split_fold", type=int, default=-1, help="Split fold (auto-detected from embeddings file if omitted)")
     parser.add_argument("--epochs", type=int, default=40, help="Epochs to train linear probe")
     parser.add_argument("--lr", type=float, default=3e-3, help="Learning rate for linear probe")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size for linear probe")
@@ -376,6 +378,27 @@ def main() -> None:
         raise FileNotFoundError(f"Embeddings file not found: {emb_path}")
 
     data_pt = torch.load(emb_path, map_location="cpu")
+
+    # Auto-resolve backbone and split_fold from metadata or path if not explicitly provided
+    metadata = data_pt.get("metadata", {}) if isinstance(data_pt, dict) else {}
+    if not args.backbone:
+        if metadata.get("backbone"):
+            args.backbone = str(metadata["backbone"])
+        else:
+            parent_name = emb_path.parent.name
+            args.backbone = parent_name if parent_name not in ["extracted_embeddings", "."] else emb_path.stem
+
+    if args.split_fold == -1:
+        if "split_fold" in metadata and metadata["split_fold"] is not None:
+            args.split_fold = int(metadata["split_fold"])
+        else:
+            import re
+            match = re.search(r"fold_?(\d+)", str(emb_path))
+            if match:
+                args.split_fold = int(match.group(1))
+            else:
+                args.split_fold = 0
+
     train_data = data_pt["train"]
     test_data = data_pt[args.test_subset]
 
@@ -438,7 +461,7 @@ def main() -> None:
     report_text = format_marginal_report(marginal_metrics)
     print(report_text)
 
-    exp_name = args.exp_name if args.exp_name else f"eval_{emb_path.stem}"
+    exp_name = args.exp_name if args.exp_name else f"eval_{args.backbone}_fold{args.split_fold}"
     save_experiment_result(
         experiment_name=exp_name,
         config=args,
