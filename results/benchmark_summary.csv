@@ -3,3 +3,9 @@ timestamp,experiment_name,backbone,split_fold,epochs,marginal_acc,type_acc,make_
 20260831_122323,lejepa_swin_t_linear_probe_fold0,N/A,N/A,50,65.60,85.97,58.70,52.12,38.48,34.34,27.72,9.14,42.32,24.11,results/lejepa_swin_t_linear_probe_fold0_20260831_122323
 20260831_123147,lejepa_vit_base_linear_probe_fold0,vit_base_patch16_244,0,50,62.12,84.00,54.82,47.55,34.09,34.52,27.78,9.02,36.60,24.67,results/lejepa_vit_base_linear_probe_fold0_20260831_123147
 20260831_123303,lejepa_swin_t_linear_probe_fold0,swin_tiny_patch4_window7_244,0,50,65.54,85.81,58.56,52.24,38.27,34.34,27.90,9.04,42.00,24.30,results/lejepa_swin_t_linear_probe_fold0_20260831_123303
+20260831_131910,ft_direct_efficientnet_v2_fold0,tf_efficientnetv2_m.in21k_ft_in1k,0,30,87.82,93.91,88.57,80.99,76.00,7.51,4.73,2.58,80.95,57.48,results/ft_direct_efficientnet_v2_fold0_20260831_131910
+20260831_165017,ft_lejepa_efficientnet_v2_fold0,tf_efficientnetv2_m.in21k_ft_in1k,0,30,90.42,95.05,91.61,84.61,81.66,4.41,2.60,1.60,85.14,68.60,results/ft_lejepa_efficientnet_v2_fold0_20260831_165017
+20260831_180912,ft_direct_swin_t_fold0,swin_base_patch4_window7_224,0,30,91.68,95.78,92.35,86.90,83.33,5.54,3.67,1.87,87.07,69.35,results/ft_direct_swin_t_fold0_20260831_180912
+20260831_215844,ft_lejepa_swin_t_fold0,swin_base_patch4_window7_224,0,30,88.49,94.56,89.18,81.73,77.83,6.05,4.20,1.73,82.05,62.06,results/ft_lejepa_swin_t_fold0_20260831_215844
+20260831_230101,ft_direct_convnext_fold0,convnext_base,0,30,91.68,96.24,92.06,86.76,83.15,5.69,4.04,1.50,87.32,67.57,results/ft_direct_convnext_fold0_20260831_230101
+20260901_122349,ft_lejepa_convnext_fold0,convnext_base,0,30,91.01,95.27,91.65,86.11,82.48,5.44,3.68,1.52,86.19,68.60,results/ft_lejepa_convnext_fold0_20260901_122349
