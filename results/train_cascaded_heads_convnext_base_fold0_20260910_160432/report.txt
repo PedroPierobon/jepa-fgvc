@@ -1,0 +1,21 @@
+CASCADED CONDITIONAL HEADS EVALUATION REPORT
+Dataset: UFPR-VeSV | Fold: 0 | Backbone: convnext_base
+Date: 2026-09-10 16:04:32
+================================================================================
+1. TAXONOMIC CONSISTENCY (PRE-HCD INVALID TUPLES):
+- Baseline Independent Heads Invalid Rate: 5.44%
+- Cascaded Conditional Heads Invalid Rate: 2.48%
+- Target Status (< 4.0%):                  ACHIEVED [✓]
+
+2. TEST SET ACCURACIES (5,075 SAMPLES):
+- Marginal Exact Tuple:                    84.63% (RGB: 87.94%, IR: 72.24%)
+- Task Accuracies (Marginal):              Type: 95.55%, Make: 92.59%, Model: 86.96%
+- HCD Pure (w=[1,1,1]):                    85.38% (RGB: 88.59%, IR: 73.36%)
+- HCD-C Calibrated:                        85.40% (RGB: 88.59%, IR: 73.46%)
+- Task Accuracies (HCD-C):                 Type: 95.63%, Make: 92.85%, Model: 86.86%
+- Rescued Samples:                         39 (Broken: 0)
+- Post-HCD Invalid Rate:                   0.00%
+
+3. CALIBRATION PARAMETERS:
+- Learned HCD-C weights:                   w = [1.0, 0.8358, 1.3314]
+- Temperature:                             T = 3.3301
