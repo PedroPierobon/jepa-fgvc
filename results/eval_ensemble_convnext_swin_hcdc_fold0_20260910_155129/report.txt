@@ -1,0 +1,19 @@
+COMPLEMENTARY ENSEMBLE EVALUATION REPORT: CONVNEXT + SWIN
+Dataset: UFPR-VeSV | Fold: 0
+Date: 2026-09-10 15:51:29
+================================================================================
+1. INDIVIDUAL MODELS:
+- ConvNeXt-Base HCD-C: Exact 84.47% | RGB: 87.82% | IR: 71.96%
+- Swin-Base HCD-C:     Exact 79.90% | RGB: 83.77% | IR: 65.42%
+
+2. ENSEMBLE CONFIGURATIONS:
+- Balanced Probability Ensemble (50/50): Exact 85.38% (RGB: 88.61%, IR: 73.27%)
+- Balanced Logit Ensemble (50/50):       Exact 85.54% (RGB: 88.61%, IR: 74.02%)
+- Optimal Tuned Ensemble (a=0.50):      Exact 85.38% (RGB: 88.61%, IR: 73.27%)
+- Tri-Model Ensemble:                    Exact 86.60% (RGB: 89.46%, IR: 75.89%)
+
+3. TARGET STATUS:
+- Target: >= 85.0% Joint Tuple Accuracy
+- Best Achieved: 86.60% (Surpassed: True)
+- Rescued Samples: 94 (Broken: 0)
+- Pre-HCD Invalid Tuples: 5.26% -> 0.00%

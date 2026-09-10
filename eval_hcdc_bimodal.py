@@ -124,7 +124,7 @@ def extract_or_load_logits(
     """
     if cache_path and cache_path.exists():
         print(f"[*] Loading cached logits from: {cache_path}")
-        data = torch.load(cache_path, map_location="cpu")
+        data = torch.load(cache_path, map_location="cpu", weights_only=False)
         return data["z"], data["y"], data["is_ir"]
 
     if model is None:
@@ -348,7 +348,7 @@ def evaluate_backbone_bimodal(
     if need_model:
         print("[*] Instantiating model and loading weights...")
         model = HierarchicalClassifier(backbone_name=backbone, pretrained=False)
-        ckpt = torch.load(ckpt_path, map_location="cpu")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
         model = model.to(device)
 
