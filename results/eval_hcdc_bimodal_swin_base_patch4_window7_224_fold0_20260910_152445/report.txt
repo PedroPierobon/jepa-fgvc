@@ -1,0 +1,26 @@
+BIMODAL TEMPERATURE AND TASK CALIBRATION REPORT (HCD-C)
+Dataset: UFPR-VeSV | Fold: 0 | Model: Swin-Base + LeJEPA (swin_base_patch4_window7_224)
+Date: 2026-09-10 15:24:45
+================================================================================
+1. ACCURACY & CONSISTENCY SUMMARY:
+- Marginal Exact Tuple Accuracy:   77.83% (RGB: 82.05%, IR: 62.06%)
+- Marginal Task Accuracies:        Type: 94.56%, Make: 89.18%, Model: 81.73%
+- Pre-HCD Invalid Tuples:          6.05% (Violations eliminated post-HCD -> 0.00%)
+- HCD Pure (w=[1,1,1]):            79.76% (RGB: 83.70%, IR: 65.05%)
+- HCD-C Unimodal:                  79.90% (RGB: 83.77%, IR: 65.42%)
+- HCD-C Bimodal Full:              79.90% (RGB: 83.80%, IR: 65.33%)
+- HCD-C Task-Temperature Scaling:  79.84% (RGB: 83.77%, IR: 65.14%)
+
+2. CALIBRATION METRICS (ECE & NLL):
+- Unimodal ECE (Joint Tuple):      7.01% (RGB: 8.49%, IR: 3.84%) | NLL: 0.9202
+- Bimodal Temp ECE:                6.87% (RGB: 7.10%, IR: 6.73%) | NLL: 0.9117
+- Bimodal Full ECE:                6.84% (RGB: 7.25%, IR: 5.77%) | NLL: 0.9109
+
+3. SAMPLES RESCUED:
+- Total Rescued (Bimodal Full):    105 (Broken: 0)
+- IR Rescued Samples:              35 / 1070
+- RGB Rescued Samples:             70 / 4005
+
+4. CALIBRATION PARAMETERS:
+- w_RGB: [1.0, 0.7651, 1.4191] | T_RGB: 3.9086
+- w_IR:  [1.0, 0.7098, 1.5603] | T_IR:  4.9159

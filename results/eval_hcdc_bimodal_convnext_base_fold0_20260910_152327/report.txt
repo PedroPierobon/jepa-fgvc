@@ -1,0 +1,26 @@
+BIMODAL TEMPERATURE AND TASK CALIBRATION REPORT (HCD-C)
+Dataset: UFPR-VeSV | Fold: 0 | Model: ConvNeXt-Base + LeJEPA (convnext_base)
+Date: 2026-09-10 15:23:27
+================================================================================
+1. ACCURACY & CONSISTENCY SUMMARY:
+- Marginal Exact Tuple Accuracy:   82.48% (RGB: 86.19%, IR: 68.60%)
+- Marginal Task Accuracies:        Type: 95.27%, Make: 91.65%, Model: 86.11%
+- Pre-HCD Invalid Tuples:          5.44% (Violations eliminated post-HCD -> 0.00%)
+- HCD Pure (w=[1,1,1]):            84.33% (RGB: 87.62%, IR: 72.06%)
+- HCD-C Unimodal:                  84.47% (RGB: 87.82%, IR: 71.96%)
+- HCD-C Bimodal Full:              84.39% (RGB: 87.72%, IR: 71.96%)
+- HCD-C Task-Temperature Scaling:  84.33% (RGB: 87.64%, IR: 71.96%)
+
+2. CALIBRATION METRICS (ECE & NLL):
+- Unimodal ECE (Joint Tuple):      4.27% (RGB: 5.16%, IR: 2.53%) | NLL: 0.7150
+- Bimodal Temp ECE:                4.10% (RGB: 3.71%, IR: 6.34%) | NLL: 0.7082
+- Bimodal Full ECE:                3.97% (RGB: 3.80%, IR: 5.45%) | NLL: 0.7063
+
+3. SAMPLES RESCUED:
+- Total Rescued (Bimodal Full):    97 (Broken: 0)
+- IR Rescued Samples:              36 / 1070
+- RGB Rescued Samples:             61 / 4005
+
+4. CALIBRATION PARAMETERS:
+- w_RGB: [1.0, 1.0018, 1.4503] | T_RGB: 3.7897
+- w_IR:  [1.0, 0.7898, 1.7316] | T_IR:  4.9280

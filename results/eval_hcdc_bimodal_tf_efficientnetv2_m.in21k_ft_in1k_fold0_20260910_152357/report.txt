@@ -1,0 +1,26 @@
+BIMODAL TEMPERATURE AND TASK CALIBRATION REPORT (HCD-C)
+Dataset: UFPR-VeSV | Fold: 0 | Model: EfficientNet-V2 + LeJEPA (tf_efficientnetv2_m.in21k_ft_in1k)
+Date: 2026-09-10 15:23:57
+================================================================================
+1. ACCURACY & CONSISTENCY SUMMARY:
+- Marginal Exact Tuple Accuracy:   81.66% (RGB: 85.14%, IR: 68.60%)
+- Marginal Task Accuracies:        Type: 95.05%, Make: 91.61%, Model: 84.61%
+- Pre-HCD Invalid Tuples:          4.41% (Violations eliminated post-HCD -> 0.00%)
+- HCD Pure (w=[1,1,1]):            83.17% (RGB: 86.34%, IR: 71.31%)
+- HCD-C Unimodal:                  83.29% (RGB: 86.44%, IR: 71.50%)
+- HCD-C Bimodal Full:              83.31% (RGB: 86.44%, IR: 71.59%)
+- HCD-C Task-Temperature Scaling:  83.25% (RGB: 86.37%, IR: 71.59%)
+
+2. CALIBRATION METRICS (ECE & NLL):
+- Unimodal ECE (Joint Tuple):      4.03% (RGB: 4.61%, IR: 3.41%) | NLL: 0.7567
+- Bimodal Temp ECE:                3.72% (RGB: 2.90%, IR: 7.75%) | NLL: 0.7493
+- Bimodal Full ECE:                3.68% (RGB: 3.01%, IR: 6.80%) | NLL: 0.7469
+
+3. SAMPLES RESCUED:
+- Total Rescued (Bimodal Full):    84 (Broken: 0)
+- IR Rescued Samples:              32 / 1070
+- RGB Rescued Samples:             52 / 4005
+
+4. CALIBRATION PARAMETERS:
+- w_RGB: [1.0, 0.9612, 1.3826] | T_RGB: 3.5854
+- w_IR:  [1.0, 0.808, 1.5253] | T_IR:  4.7232
