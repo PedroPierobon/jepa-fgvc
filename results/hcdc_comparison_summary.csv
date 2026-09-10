@@ -1,0 +1,4 @@
+model_name,backbone,marginal_exact_acc,marginal_invalid_pct,marginal_rgb_exact,marginal_ir_exact,hcd_pure_exact_acc,hcd_pure_gain_pp,hcd_pure_gain_rel_pct,hcd_pure_rgb_exact,hcd_pure_ir_exact,hcd_pure_rescued,hcdc_calib_exact_acc,hcdc_calib_gain_pp,hcdc_calib_gain_rel_pct,hcdc_calib_rgb_exact,hcdc_calib_ir_exact,hcdc_calib_rescued,weights,temperature
+EfficientNet-V2 + LeJEPA,tf_efficientnetv2_m.in21k_ft_in1k,81.66,4.41,85.14,68.60,83.17,+1.52,+1.86,86.34,71.31,77,83.29,+1.64,+2.00,86.44,71.50,83,"[1.0, 0.8907, 1.4097]",3.8593
+ConvNeXt-Base + LeJEPA,convnext_base,82.48,5.44,86.19,68.60,84.33,+1.85,+2.25,87.62,72.06,94,84.47,+1.99,+2.41,87.82,71.96,101,"[1.0, 0.9107, 1.5191]",4.0725
+Swin-Base + LeJEPA,swin_base_patch4_window7_224,77.83,6.05,82.05,62.06,79.76,+1.93,+2.48,83.70,65.05,98,79.90,+2.07,+2.66,83.77,65.42,105,"[1.0, 0.7442, 1.4494]",4.1472
