@@ -63,7 +63,7 @@ class HierarchicalClassifier(nn.Module):
         # Load LeJEPA pre-trained encoder weights if provided
         if checkpoint_encoder_path and os.path.isfile(checkpoint_encoder_path):
             print(f"[*] Loading LeJEPA pretrained weights from: {checkpoint_encoder_path}")
-            ckpt = torch.load(checkpoint_encoder_path, map_location="cpu")
+            ckpt = torch.load(checkpoint_encoder_path, map_location="cpu", weights_only=False)
             if isinstance(ckpt, dict) and "encoder_state_dict" in ckpt:
                 self.encoder.load_state_dict(ckpt["encoder_state_dict"])
             elif isinstance(ckpt, dict) and "model_state_dict" in ckpt:
@@ -141,6 +141,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear warmup epochs")
     parser.add_argument("--amp", action="store_true", help="Enable automatic mixed precision (FP16)")
     parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument(
+        "--loss_weights",
+        nargs=3,
+        type=float,
+        default=[1.0, 1.0, 1.0],
+        help="Taxonomy loss weights [w_type, w_make, w_model] (default: 1.0 1.0 1.0, e.g. 0.5 1.0 1.8)",
+    )
+    parser.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=0.0,
+        help="Label smoothing factor for CrossEntropyLoss (default: 0.0)",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     return parser.parse_args()
@@ -321,11 +334,13 @@ def main() -> None:
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    w_type, w_make, w_model = args.loss_weights
 
     output_dir = Path(args.output_dir)
     if is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[*] Loss weights (Type, Make, Model): {args.loss_weights} | Label smoothing: {args.label_smoothing}")
 
     best_val_exact = 0.0
 
@@ -349,7 +364,11 @@ def main() -> None:
             if args.amp and device.type == "cuda":
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     out_t, out_m, out_mo = model(images)
-                    loss = criterion(out_t, y_t) + criterion(out_m, y_m) + criterion(out_mo, y_mo)
+                    loss = (
+                        w_type * criterion(out_t, y_t)
+                        + w_make * criterion(out_m, y_m)
+                        + w_model * criterion(out_mo, y_mo)
+                    )
 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
@@ -358,7 +377,11 @@ def main() -> None:
                 scaler.update()
             else:
                 out_t, out_m, out_mo = model(images)
-                loss = criterion(out_t, y_t) + criterion(out_m, y_m) + criterion(out_mo, y_mo)
+                loss = (
+                    w_type * criterion(out_t, y_t)
+                    + w_make * criterion(out_m, y_m)
+                    + w_model * criterion(out_mo, y_mo)
+                )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
                 optimizer.step()
@@ -399,7 +422,7 @@ def main() -> None:
         print("\n" + "=" * 80)
         print("FINAL EVALUATION ON TEST SPLIT")
         print("=" * 80)
-        best_ckpt = torch.load(output_dir / f"best_model_fold{args.split_fold}.pth", map_location=device)
+        best_ckpt = torch.load(output_dir / f"best_model_fold{args.split_fold}.pth", map_location=device, weights_only=False)
         raw_model.load_state_dict(best_ckpt["model_state_dict"])
         test_metrics = evaluate_model(model, test_loader, taxonomy, device)
         report_text = format_marginal_report(test_metrics)
