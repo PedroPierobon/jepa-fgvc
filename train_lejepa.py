@@ -65,6 +65,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clip_grad", type=float, default=3.0, help="Max gradient norm clipping")
     parser.add_argument("--amp", action="store_true", help="Enable automatic mixed precision (FP16)")
 
+    # Data Augmentation & Spectral IR Simulation
+    parser.add_argument(
+        "--spectral_ir_aug",
+        action="store_true",
+        help="Enable spectral infrared simulation (CLAHE + sensor noise) in augmentations",
+    )
+    parser.add_argument(
+        "--grayscale_prob",
+        type=float,
+        default=0.25,
+        help="Probability of random grayscale transform (default: 0.25, e.g. 0.40)",
+    )
+
     # Misc
     parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume training from")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -167,11 +180,16 @@ def main() -> None:
         print(f"Latent Dim K: {args.latent_dim} | Projector Hidden: {args.proj_hidden_dim} | SIGReg Lambda: {args.lambd}")
         print(f"Batch Size: {args.batch_size} per GPU (Global: {args.batch_size * world_size}) | Epochs: {args.epochs}")
         print(f"Optimizer: AdamW (LR: {args.lr:.2e}, Min LR: {args.min_lr:.2e}, Warmup: {args.warmup_epochs} ep)")
+        print(f"Spectral IR Aug: {args.spectral_ir_aug} | Grayscale Prob: {args.grayscale_prob}")
         print(f"AMP FP16: {args.amp} | World Size: {world_size}")
         print("=" * 80)
 
     # 1. Dataset & DataLoader
-    train_transform = LeJEPADataTransform(img_size=args.img_size)
+    train_transform = LeJEPADataTransform(
+        img_size=args.img_size,
+        grayscale_prob=args.grayscale_prob,
+        spectral_ir_aug=args.spectral_ir_aug,
+    )
     train_dataset = UFPRDataset(
         root_dir=args.data_dir,
         split_fold=args.split_fold,
@@ -297,6 +315,34 @@ def main() -> None:
     if is_main_process:
         total_time_min = (time.time() - total_start_time) / 60.0
         print(f"\n[✓] Pre-training successfully completed in {total_time_min:.2f} minutes!")
+
+        # Log pre-training experiment metrics
+        report_text = f"""LEJEPA SSL PRE-TRAINING REPORT
+Dataset: UFPR-VeSV | Fold: {args.split_fold} | Backbone: {args.backbone}
+Epochs: {args.epochs} | Final Loss: {avg_loss:.4f} | Sim: {avg_sim:.4f} | SIGReg: {avg_sigreg:.4f}
+Spectral IR Augmentation: {args.spectral_ir_aug} | Grayscale Prob: {args.grayscale_prob}
+Output Checkpoint: {output_dir / f'lejepa_encoder_fold{args.split_fold}.pth'}
+Total Training Time: {total_time_min:.2f} minutes
+"""
+        metrics_dict = {
+            "loss": avg_loss,
+            "loss_sim": avg_sim,
+            "loss_sigreg": avg_sigreg,
+            "training_time_min": total_time_min,
+            "epochs": args.epochs,
+            "spectral_ir_aug": args.spectral_ir_aug,
+        }
+        exp_name = f"lejepa_{args.backbone}_fold{args.split_fold}"
+        if args.spectral_ir_aug:
+            exp_name += "_spectral_ir"
+
+        save_experiment_result(
+            experiment_name=exp_name,
+            config=vars(args),
+            metrics=metrics_dict,
+            report_text=report_text,
+            output_root="./results",
+        )
 
     cleanup_distributed(is_distributed)
 

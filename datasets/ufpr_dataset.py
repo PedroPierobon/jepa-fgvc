@@ -47,11 +47,48 @@ class SolarizeTransform:
         return ImageOps.solarize(img, threshold=self.threshold)
 
 
+class CLAHETransform:
+    """
+    Contrast Limited Adaptive Histogram Equalization / Local Contrast Enhancement.
+    Simulates the dynamic range compression, local tone-mapping, and AGC
+    (Automatic Gain Control) typical of active infrared surveillance night cameras.
+    """
+
+    def __init__(self, blend_min: float = 0.4, blend_max: float = 0.8) -> None:
+        self.blend_min = blend_min
+        self.blend_max = blend_max
+
+    def __call__(self, img: Image.Image) -> Image.Image:
+        gray = img.convert("L")
+        ac = ImageOps.autocontrast(gray, cutoff=1)
+        eq = ImageOps.equalize(ac)
+        blend_factor = torch.empty(1).uniform_(self.blend_min, self.blend_max).item()
+        enhanced = Image.blend(gray, eq, blend_factor)
+        return enhanced.convert("RGB")
+
+
+class SensorNoiseTransform:
+    """
+    Simulates surveillance camera sensor noise (Gaussian read noise + Poisson shot noise)
+    characteristic of high-gain nighttime infrared sensors.
+    """
+
+    def __init__(self, sigma_min: float = 0.015, sigma_max: float = 0.055) -> None:
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        sigma = torch.empty(1).uniform_(self.sigma_min, self.sigma_max).item()
+        noise = torch.randn_like(tensor) * sigma
+        return tensor + noise
+
+
 class LeJEPADataTransform:
     """
     Multi-view self-supervised data augmentation for LeJEPA.
     Generates two augmented global views designed to encourage domain invariance across
     Daylight (RGB) and Infrared (IR) surveillance imagery.
+    Supports optional Spectral Infrared Augmentation (CLAHE + Sensor Noise).
     """
 
     def __init__(
@@ -60,12 +97,16 @@ class LeJEPADataTransform:
         scale: Tuple[float, float] = (0.4, 1.0),
         mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
         std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
+        grayscale_prob: float = 0.25,
+        spectral_ir_aug: bool = False,
     ) -> None:
         self.img_size = img_size
         self.normalize = transforms.Normalize(mean=mean, std=std)
+        self.grayscale_prob = grayscale_prob
+        self.spectral_ir_aug = spectral_ir_aug
 
-        # View 1
-        self.transform_1 = transforms.Compose([
+        # Base transformations for View 1
+        t1_list = [
             transforms.RandomResizedCrop(
                 img_size, scale=scale, interpolation=transforms.InterpolationMode.BICUBIC
             ),
@@ -74,14 +115,11 @@ class LeJEPADataTransform:
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8,
             ),
-            transforms.RandomGrayscale(p=0.25),  # Essential for cross-modal RGB/IR invariance
-            transforms.RandomApply([GaussianBlurTransform(0.1, 2.0)], p=0.5),
-            transforms.ToTensor(),
-            self.normalize,
-        ])
+            transforms.RandomGrayscale(p=grayscale_prob),
+        ]
 
-        # View 2
-        self.transform_2 = transforms.Compose([
+        # Base transformations for View 2
+        t2_list = [
             transforms.RandomResizedCrop(
                 img_size, scale=scale, interpolation=transforms.InterpolationMode.BICUBIC
             ),
@@ -90,12 +128,29 @@ class LeJEPADataTransform:
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
                 p=0.8,
             ),
-            transforms.RandomGrayscale(p=0.25),
-            transforms.RandomApply([GaussianBlurTransform(0.1, 2.0)], p=0.1),
-            transforms.RandomApply([SolarizeTransform(128)], p=0.2),
-            transforms.ToTensor(),
-            self.normalize,
-        ])
+            transforms.RandomGrayscale(p=grayscale_prob),
+        ]
+
+        if spectral_ir_aug:
+            t1_list.append(transforms.RandomApply([CLAHETransform()], p=0.45))
+            t2_list.append(transforms.RandomApply([CLAHETransform()], p=0.45))
+
+        t1_list.append(transforms.RandomApply([GaussianBlurTransform(0.1, 2.0)], p=0.5))
+        t1_list.append(transforms.ToTensor())
+
+        t2_list.append(transforms.RandomApply([GaussianBlurTransform(0.1, 2.0)], p=0.1))
+        t2_list.append(transforms.RandomApply([SolarizeTransform(128)], p=0.2))
+        t2_list.append(transforms.ToTensor())
+
+        if spectral_ir_aug:
+            t1_list.append(transforms.RandomApply([SensorNoiseTransform()], p=0.50))
+            t2_list.append(transforms.RandomApply([SensorNoiseTransform()], p=0.50))
+
+        t1_list.append(self.normalize)
+        t2_list.append(self.normalize)
+
+        self.transform_1 = transforms.Compose(t1_list)
+        self.transform_2 = transforms.Compose(t2_list)
 
     def __call__(self, img: Image.Image) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.transform_1(img), self.transform_2(img)

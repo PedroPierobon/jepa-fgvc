@@ -1,0 +1,6 @@
+LEJEPA SSL PRE-TRAINING REPORT
+Dataset: UFPR-VeSV | Fold: 0 | Backbone: convnext_base
+Epochs: 60 | Final Loss: 0.3394 | Sim: 0.0148 | SIGReg: 0.1623
+Spectral IR Augmentation: True | Grayscale Prob: 0.4
+Output Checkpoint: checkpoints/convnext_lejepa_spectral_ir/lejepa_encoder_fold0.pth
+Total Training Time: 133.36 minutes
