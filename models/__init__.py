@@ -4,6 +4,7 @@ Models and architectural components for LeJEPA with SIGReg.
 
 from .sigreg import SIGReg, sigreg_loss
 from .lejepa_module import LeJEPA, LeJEPAEncoder, MLPProjector, MLPPredictor
+from .vl_jepa_module import VLJEPA, PrototypeTextBank
 
 __all__ = [
     "SIGReg",
@@ -12,4 +13,6 @@ __all__ = [
     "LeJEPAEncoder",
     "MLPProjector",
     "MLPPredictor",
+    "VLJEPA",
+    "PrototypeTextBank",
 ]
