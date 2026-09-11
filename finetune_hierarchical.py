@@ -285,9 +285,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Execute fast 2-step verification and exit",
     )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=0,
+        help="Input image resolution (alias for --img_size, e.g. 288)",
+    )
+    parser.add_argument(
+        "--init_from_model",
+        type=str,
+        default="",
+        help="Path to full HierarchicalClassifier checkpoint to warm-start progressive fine-tuning",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.resolution > 0:
+        args.img_size = args.resolution
+    return args
 
 
 def set_seed(seed: int) -> None:
@@ -452,6 +467,17 @@ def main() -> None:
         num_makes=taxonomy.num_makes,
         num_models=taxonomy.num_models,
     ).to(device)
+
+    # Warm-start full model (encoder + heads) if init_from_model is provided
+    if args.init_from_model and os.path.isfile(args.init_from_model):
+        if is_main_process:
+            print(f"[*] Warm-starting full model (encoder + heads) from: {args.init_from_model}")
+        full_ckpt = torch.load(args.init_from_model, map_location="cpu", weights_only=False)
+        state = full_ckpt.get("ema_state_dict", full_ckpt.get("model_state_dict", full_ckpt))
+        clean_state = {k.replace("module.", ""): v for k, v in state.items()}
+        missing, unexpected = model.load_state_dict(clean_state, strict=False)
+        if is_main_process:
+            print(f"[✓] Full model weights loaded successfully! (Missing: {len(missing)}, Unexpected: {len(unexpected)})")
 
     if is_distributed:
         model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
