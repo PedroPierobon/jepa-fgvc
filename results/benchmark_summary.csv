@@ -44,3 +44,4 @@ timestamp,experiment_name,backbone,split_fold,epochs,marginal_acc,type_acc,make_
 20260910_165858,ft_convnext_weighted_loss_fold0,convnext_base,0,30,92.15,95.51,93.04,87.90,84.55,4.04,2.72,1.10,87.82,72.34,results/ft_convnext_weighted_loss_fold0_20260910_165858
 20260910_192918,lejepa_convnext_base_fold0_spectral_ir,convnext_base,0,60,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,results/lejepa_convnext_base_fold0_spectral_ir_20260910_192918
 20260910_212234,vl_jepa_convnext_base_prototypes_fold0,convnext_base,0,60,89.96,95.34,93.51,81.03,78.13,0.00,0.00,0.00,79.14,74.42,results/vl_jepa_convnext_base_prototypes_fold0_20260910_212234
+20260910_231602,ft_convnext_llrd_ema_60ep_fold0,convnext_base,0,60,91.98,95.01,93.40,87.53,84.75,3.21,1.79,1.08,87.84,73.18,results/ft_convnext_llrd_ema_60ep_fold0_20260910_231602

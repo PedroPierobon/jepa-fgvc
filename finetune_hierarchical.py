@@ -40,6 +40,109 @@ from evaluate_hierarchical import (
 from utils.results_logger import save_experiment_result
 
 
+class ModelEMA:
+    """
+    Maintains Exponential Moving Average (EMA) of model parameters for improved
+    generalization and calibration during extended fine-tuning schedules.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        decay: float = 0.999,
+        device: Optional[torch.device] = None,
+    ) -> None:
+        import copy
+        self.decay = decay
+        self.device = device
+        raw_model = model.module if hasattr(model, "module") else model
+        self.module = copy.deepcopy(raw_model)
+        self.module.eval()
+        if device is not None:
+            self.module.to(device)
+        for p in self.module.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        raw_model = model.module if hasattr(model, "module") else model
+        for ema_p, model_p in zip(self.module.parameters(), raw_model.parameters()):
+            if ema_p.dtype.is_floating_point:
+                ema_p.data.mul_(self.decay).add_(
+                    model_p.data.to(ema_p.device), alpha=1.0 - self.decay
+                )
+        for ema_b, model_b in zip(self.module.buffers(), raw_model.buffers()):
+            ema_b.copy_(model_b.to(ema_b.device))
+
+
+def get_layer_id_and_scale(
+    name: str, backbone_name: str, decay_rate: float = 0.75
+) -> Tuple[int, float]:
+    """
+    Assigns layer ID and learning rate decay scale for Layer-wise Learning Rate Decay (LLRD).
+    Earlier layers receive smaller learning rates to preserve general representations.
+    """
+    name_lower = name.lower()
+    b_lower = backbone_name.lower()
+
+    if "convnext" in b_lower:
+        max_layer = 4
+        if "stem" in name_lower:
+            layer_id = 0
+        elif "stages.0" in name_lower or "stages_0" in name_lower:
+            layer_id = 1
+        elif "stages.1" in name_lower or "stages_1" in name_lower:
+            layer_id = 2
+        elif "stages.2" in name_lower or "stages_2" in name_lower:
+            layer_id = 3
+        elif "stages.3" in name_lower or "stages_3" in name_lower:
+            layer_id = 4
+        else:
+            layer_id = 4
+    elif "swin" in b_lower:
+        max_layer = 4
+        if "patch_embed" in name_lower:
+            layer_id = 0
+        elif "layers.0" in name_lower or "layers_0" in name_lower:
+            layer_id = 1
+        elif "layers.1" in name_lower or "layers_1" in name_lower:
+            layer_id = 2
+        elif "layers.2" in name_lower or "layers_2" in name_lower:
+            layer_id = 3
+        elif "layers.3" in name_lower or "layers_3" in name_lower:
+            layer_id = 4
+        else:
+            layer_id = 4
+    elif "vit" in b_lower:
+        max_layer = 12
+        if "patch_embed" in name_lower or "cls_token" in name_lower or "pos_embed" in name_lower:
+            layer_id = 0
+        else:
+            import re
+            m = re.search(r"blocks\.(\d+)", name_lower)
+            if m:
+                layer_id = min(int(m.group(1)) + 1, max_layer)
+            else:
+                layer_id = max_layer
+    elif "efficientnet" in b_lower:
+        max_layer = 7
+        if "conv_stem" in name_lower or "bn1" in name_lower:
+            layer_id = 0
+        else:
+            import re
+            m = re.search(r"blocks\.(\d+)", name_lower)
+            if m:
+                layer_id = min(int(m.group(1)) + 1, max_layer)
+            else:
+                layer_id = max_layer
+    else:
+        max_layer = 1
+        layer_id = 1
+
+    scale = float(decay_rate ** (max_layer - layer_id))
+    return layer_id, scale
+
+
 class HierarchicalClassifier(nn.Module):
     """
     End-to-End Hierarchical Classification Model:
@@ -153,6 +256,34 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Label smoothing factor for CrossEntropyLoss (default: 0.0)",
+    )
+    # LLRD & EMA
+    parser.add_argument(
+        "--use_llrd",
+        action="store_true",
+        help="Enable Layer-wise Learning Rate Decay (LLRD) for backbone parameters",
+    )
+    parser.add_argument(
+        "--llrd_decay",
+        type=float,
+        default=0.75,
+        help="Multiplicative layer-wise learning rate decay rate (default: 0.75)",
+    )
+    parser.add_argument(
+        "--use_ema",
+        action="store_true",
+        help="Maintain Exponential Moving Average (EMA) of model parameters",
+    )
+    parser.add_argument(
+        "--ema_decay",
+        type=float,
+        default=0.999,
+        help="EMA decay rate (default: 0.999)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Execute fast 2-step verification and exit",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
@@ -325,22 +456,87 @@ def main() -> None:
     if is_distributed:
         model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    # 3. Differential Learning Rates
+    # 3. Differential Learning Rates & LLRD
     raw_model = model.module if hasattr(model, "module") else model
-    optimizer_grouped_parameters = [
-        {"params": raw_model.encoder.parameters(), "lr": args.lr_backbone},
-        {"params": list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters()), "lr": args.lr_head},
-    ]
+    if args.use_llrd:
+        layer_params: Dict[int, List[nn.Parameter]] = {}
+        layer_scales: Dict[int, float] = {}
+        for n, p in raw_model.encoder.backbone.named_parameters():
+            if not p.requires_grad:
+                continue
+            lid, sc = get_layer_id_and_scale(n, args.backbone, args.llrd_decay)
+            layer_params.setdefault(lid, []).append(p)
+            layer_scales[lid] = sc
+
+        optimizer_grouped_parameters = []
+        for lid in sorted(layer_params.keys()):
+            scale = layer_scales[lid]
+            lr_layer = args.lr_backbone * scale
+            optimizer_grouped_parameters.append({
+                "params": layer_params[lid],
+                "lr": lr_layer,
+                "weight_decay": args.weight_decay,
+            })
+            if is_main_process:
+                print(f"[*] LLRD Stage {lid}: {len(layer_params[lid])} parameter tensors | LR: {lr_layer:.2e} (scale: {scale:.4f})")
+
+        head_params = list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters())
+        optimizer_grouped_parameters.append({
+            "params": head_params,
+            "lr": args.lr_head,
+            "weight_decay": args.weight_decay,
+        })
+    else:
+        optimizer_grouped_parameters = [
+            {"params": raw_model.encoder.parameters(), "lr": args.lr_backbone},
+            {"params": list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters()), "lr": args.lr_head},
+        ]
+
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     w_type, w_make, w_model = args.loss_weights
 
+    # Model EMA
+    model_ema = ModelEMA(model, decay=args.ema_decay, device=device) if args.use_ema else None
+    if is_main_process and model_ema is not None:
+        print(f"[*] Model EMA enabled with decay factor: {args.ema_decay}")
+
     output_dir = Path(args.output_dir)
     if is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"[*] Loss weights (Type, Make, Model): {args.loss_weights} | Label smoothing: {args.label_smoothing}")
+
+    # Dry-run fast verification
+    if args.dry_run:
+        print("\n" + "=" * 70)
+        print("RUNNING FINETUNE DRY-RUN VERIFICATION (2 batches of 4)")
+        print("=" * 70)
+        from torch.utils.data import Subset
+        dry_train = DataLoader(Subset(train_dataset, range(min(8, len(train_dataset)))), batch_size=4, shuffle=True)
+        model.train()
+        for step, (images, meta) in enumerate(dry_train):
+            if step >= 2:
+                break
+            images = images.to(device)
+            y_t = meta["target_type"].to(device)
+            y_m = meta["target_make"].to(device)
+            y_mo = meta["target_model"].to(device)
+            optimizer.zero_grad()
+            out_t, out_m, out_mo = model(images)
+            loss = w_type * criterion(out_t, y_t) + w_make * criterion(out_m, y_m) + w_model * criterion(out_mo, y_mo)
+            loss.backward()
+            optimizer.step()
+            if model_ema is not None:
+                model_ema.update(model)
+            print(f"Dry-run step {step+1}/2 | Loss: {loss.item():.4f}")
+        eval_mod = model_ema.module if model_ema is not None else model
+        dry_val = DataLoader(Subset(val_dataset, range(min(4, len(val_dataset)))), batch_size=4, shuffle=False)
+        m = evaluate_model(eval_mod, dry_val, taxonomy, device)
+        print(f"Dry-run val marginal acc: {m['marginal_acc']:.2f}% | Exact: {m['acc_exact_match']:.2f}%")
+        print("[✓] Dry-run complete. Exiting.\n")
+        sys.exit(0)
 
     best_val_exact = 0.0
 
@@ -386,6 +582,9 @@ def main() -> None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
                 optimizer.step()
 
+            if model_ema is not None:
+                model_ema.update(model)
+
             total_loss += loss.item()
 
         scheduler.step()
@@ -393,12 +592,14 @@ def main() -> None:
         # Validation
         if is_main_process and (epoch % 2 == 0 or epoch == args.epochs):
             elapsed = time.time() - start_time
-            val_metrics = evaluate_model(model, val_loader, taxonomy, device)
+            eval_target = model_ema.module if model_ema is not None else model
+            val_metrics = evaluate_model(eval_target, val_loader, taxonomy, device)
+            tag = " (EMA)" if model_ema is not None else ""
 
             print(
                 f"Epoch [{epoch:02d}/{args.epochs:02d}] "
                 f"Loss: {total_loss/len(train_loader):.4f} | "
-                f"Val Marginal Acc: {val_metrics['marginal_acc']:.2f}% "
+                f"Val Marginal Acc{tag}: {val_metrics['marginal_acc']:.2f}% "
                 f"(T: {val_metrics['acc_type']:.2f}%, M: {val_metrics['acc_make']:.2f}%, Mo: {val_metrics['acc_model']:.2f}%) | "
                 f"Exact Tuple: {val_metrics['acc_exact_match']:.2f}% | "
                 f"Invalid: {val_metrics['pct_invalid_total']:.2f}% ({elapsed:.1f}s)"
@@ -407,15 +608,16 @@ def main() -> None:
             if val_metrics["acc_exact_match"] > best_val_exact:
                 best_val_exact = val_metrics["acc_exact_match"]
                 best_ckpt_path = output_dir / f"best_model_fold{args.split_fold}.pth"
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": raw_model.state_dict(),
-                        "metrics": val_metrics,
-                        "args": vars(args),
-                    },
-                    best_ckpt_path,
-                )
+                save_dict = {
+                    "epoch": epoch,
+                    "model_state_dict": raw_model.state_dict(),
+                    "metrics": val_metrics,
+                    "args": vars(args),
+                }
+                if model_ema is not None:
+                    save_dict["ema_state_dict"] = model_ema.module.state_dict()
+                    save_dict["model_state_dict"] = model_ema.module.state_dict()
+                torch.save(save_dict, best_ckpt_path)
 
     # 5. Final Test Split Evaluation & Auto-Logging
     if is_main_process:
