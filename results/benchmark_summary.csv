@@ -47,3 +47,4 @@ timestamp,experiment_name,backbone,split_fold,epochs,marginal_acc,type_acc,make_
 20260910_231602,ft_convnext_llrd_ema_60ep_fold0,convnext_base,0,60,91.98,95.01,93.40,87.53,84.75,3.21,1.79,1.08,87.84,73.18,results/ft_convnext_llrd_ema_60ep_fold0_20260910_231602
 20260910_235654,ft_convnext_progressive_288px_fold0,convnext_base,0,15,91.69,94.92,93.30,86.86,83.84,3.51,2.05,1.22,87.27,71.03,results/ft_convnext_progressive_288px_fold0_20260910_235654
 20260918_123523,ft_convnext_recipe_fold0,convnext_base,0,50,92.31,95.74,93.34,87.84,84.89,3.27,2.07,0.99,88.36,71.87,results/ft_convnext_recipe_fold0_20260918_123523
+20260918_135357,ft_convnext_recipe_fold4,convnext_base,4,50,89.55,94.03,90.35,84.27,79.95,4.84,3.16,1.22,85.24,62.00,results/ft_convnext_recipe_fold4_20260918_135357
