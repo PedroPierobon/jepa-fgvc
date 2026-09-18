@@ -16,6 +16,7 @@ Gera:
 - Salvamento em CSV e JSON consolidado
 """
 
+import argparse
 import csv
 import json
 import os
@@ -225,11 +226,24 @@ def compute_model_stats(folds_results: List[Dict[str, Any]]) -> Dict[str, Any]:
     return stats
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Avaliação de Folds com HCD e HCD-C")
+    parser.add_argument("--ckpt_dir", type=str, default=None, help="Diretório de checkpoints a avaliar (contendo best_model_fold{i}.pth)")
+    parser.add_argument("--backbone", type=str, default="convnext_base", help="Nome do backbone timm (default: convnext_base)")
+    parser.add_argument("--model_name", type=str, default="ConvNeXt-Base + LeJEPA Recipe 50ep", help="Nome de exibição do modelo")
+    parser.add_argument("--folds", type=int, nargs="+", default=None, help="Folds específicos para avaliar (ex: --folds 0 4 9)")
+    parser.add_argument("--data_dir", type=str, default=str(BASE_DIR / "UFPR-VeSV"), help="Diretório do dataset UFPR-VeSV")
+    parser.add_argument("--output_csv", type=str, default=None, help="Arquivo CSV de saída customizado")
+    parser.add_argument("--output_json", type=str, default=None, help="Arquivo JSON de saída customizado")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[*] Dispositivo de execução: {device}")
 
-    data_dir = BASE_DIR / "UFPR-VeSV"
+    data_dir = Path(args.data_dir)
     taxonomy = VehicleTaxonomy(data_dir / "annotations.json")
     cat = Catalog(
         taxonomy.valid_tuples_tensor.numpy(),
@@ -238,34 +252,45 @@ def main():
     )
     eval_transform = get_eval_transform(img_size=224)
 
-    models = [
-        (
-            "EfficientNet-V2 + LeJEPA",
-            "tf_efficientnetv2_m.in21k_ft_in1k",
-            BASE_DIR / "checkpoints_ft/efficientnet_v2_lejepa_ft",
-        ),
-        (
-            "ConvNeXt-Base + LeJEPA",
-            "convnext_base",
-            BASE_DIR / "checkpoints_ft/convnext_lejepa_ft",
-        ),
-        (
-            "Swin-Base + LeJEPA",
-            "swin_base_patch4_window7_224",
-            BASE_DIR / "checkpoints_ft/swin_t_lejepa_ft",
-        ),
-    ]
+    if args.ckpt_dir is not None:
+        models = [
+            (
+                args.model_name,
+                args.backbone,
+                Path(args.ckpt_dir),
+            )
+        ]
+    else:
+        models = [
+            (
+                "EfficientNet-V2 + LeJEPA",
+                "tf_efficientnetv2_m.in21k_ft_in1k",
+                BASE_DIR / "checkpoints_ft/efficientnet_v2_lejepa_ft",
+            ),
+            (
+                "ConvNeXt-Base + LeJEPA",
+                "convnext_base",
+                BASE_DIR / "checkpoints_ft/convnext_lejepa_ft",
+            ),
+            (
+                "Swin-Base + LeJEPA",
+                "swin_base_patch4_window7_224",
+                BASE_DIR / "checkpoints_ft/swin_t_lejepa_ft",
+            ),
+        ]
+
+    target_folds = args.folds if args.folds is not None else list(range(10))
 
     all_models_summary = {}
     master_csv_rows = []
 
     for name, backbone, ckpt_dir in models:
         print("\n" + "=" * 80)
-        print(f"INICIANDO AVALIAÇÃO DE 10 FOLDS: {name}")
+        print(f"INICIANDO AVALIAÇÃO DE FOLDS {target_folds}: {name}")
         print("=" * 80)
 
         folds_results = []
-        for fold in range(10):
+        for fold in target_folds:
             ckpt_file = ckpt_dir / f"best_model_fold{fold}.pth"
             if not ckpt_file.exists():
                 print(f"  [-] Aviso: Checkpoint {ckpt_file} não encontrado. Pulando...")
@@ -323,12 +348,14 @@ def main():
     results_dir = BASE_DIR / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    json_out = results_dir / "hcdc_10folds_all_models.json"
+    json_out = Path(args.output_json) if args.output_json else results_dir / "hcdc_10folds_all_models.json"
+    json_out.parent.mkdir(parents=True, exist_ok=True)
     with open(json_out, "w", encoding="utf-8") as f:
         json.dump(all_models_summary, f, indent=2, ensure_ascii=False)
-    print(f"\n[✓] JSON completo com os 10 folds salvo em: {json_out}")
+    print(f"\n[✓] JSON completo salvo em: {json_out}")
 
-    csv_out = results_dir / "hcdc_10folds_summary.csv"
+    csv_out = Path(args.output_csv) if args.output_csv else results_dir / "hcdc_10folds_summary.csv"
+    csv_out.parent.mkdir(parents=True, exist_ok=True)
     headers = [
         "model_name", "backbone", "fold",
         "marginal_exact", "marginal_mean", "marginal_invalid", "marginal_rgb", "marginal_ir",
