@@ -1,0 +1,4 @@
+model_name,backbone,fold,marginal_exact,marginal_mean,marginal_invalid,marginal_rgb,marginal_ir,hcd_pure_exact,hcd_pure_gain_abs,hcd_pure_rgb,hcd_pure_ir,hcdc_calib_exact,hcdc_calib_gain_abs,hcdc_calib_gain_rel,hcdc_calib_rgb,hcdc_calib_ir,hcdc_rescued,hcdc_broken
+"ConvNeXt-Base Recipe (Triangulation {0,4,9})",convnext_base,0,84.89,92.31,3.27,88.36,71.87,85.99,+1.10,89.14,74.21,85.99,+1.10,+1.30,89.14,74.21,56,0
+"ConvNeXt-Base Recipe (Triangulation {0,4,9})",convnext_base,4,79.95,89.55,4.84,85.24,62.00,81.26,+1.30,86.04,65.00,81.32,+1.36,+1.71,86.12,65.00,66,0
+"ConvNeXt-Base Recipe (Triangulation {0,4,9})",convnext_base,9,80.35,89.69,4.53,85.88,61.55,81.59,+1.24,86.79,63.91,81.59,+1.24,+1.54,86.76,64.00,60,0
