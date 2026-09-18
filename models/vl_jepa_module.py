@@ -103,11 +103,23 @@ class PrototypeTextBank(nn.Module):
             for t, m, mo in self.tuples
         ]
 
-        from sentence_transformers import SentenceTransformer
+        if self.text_model_name in ["pe_core", "pe_core_l14", "PE-Core-L-14-336", "open_clip"]:
+            import open_clip
 
-        text_encoder = SentenceTransformer(self.text_model_name)
-        embeddings = text_encoder.encode(prompts, convert_to_tensor=True, show_progress_bar=False)
-        embeddings = embeddings.float().cpu()
+            clip_model_name = "PE-Core-L-14-336"
+            clip_model, _, _ = open_clip.create_model_and_transforms(clip_model_name, pretrained="meta")
+            tokenizer = open_clip.get_tokenizer(clip_model_name)
+            clip_model.eval()
+            with torch.no_grad():
+                tokens = tokenizer(prompts)
+                embeddings = clip_model.encode_text(tokens)
+                embeddings = embeddings.float().cpu()
+        else:
+            from sentence_transformers import SentenceTransformer
+
+            text_encoder = SentenceTransformer(self.text_model_name)
+            embeddings = text_encoder.encode(prompts, convert_to_tensor=True, show_progress_bar=False)
+            embeddings = embeddings.float().cpu()
 
         # Normalize to unit sphere
         embeddings = F.normalize(embeddings, p=2.0, dim=-1)
@@ -204,6 +216,7 @@ class VLJEPA(nn.Module):
         text_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         proj_hidden_dim: int = 2048,
         use_predictor: bool = False,
+        freeze_backbone: bool = False,
         lambd_sigreg: float = 2.0,
         num_projections: int = 128,
         num_quadrature_nodes: int = 17,
@@ -214,6 +227,7 @@ class VLJEPA(nn.Module):
         self.backbone_name = backbone_name
         self.lambd_sigreg = float(lambd_sigreg)
         self.use_predictor = use_predictor
+        self.freeze_backbone = freeze_backbone
 
         # 1. Text Prototype Bank
         self.prototype_bank = PrototypeTextBank(
@@ -226,6 +240,8 @@ class VLJEPA(nn.Module):
         # 2. Visual Encoder
         self.encoder = LeJEPAEncoder(backbone_name=backbone_name, pretrained=pretrained)
         self.embed_dim = self.encoder.embed_dim
+        if freeze_backbone:
+            self.encoder.freeze()
 
         # 3. Latent Projector mapping visual features [D_vis] -> text latent space [D_text]
         self.projector = MLPProjector(
@@ -249,6 +265,12 @@ class VLJEPA(nn.Module):
             t_max=t_max,
         )
 
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.encoder.eval()
+        return self
+
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         """Extracts backbone visual features."""
         return self.encoder(x)
@@ -271,8 +293,13 @@ class VLJEPA(nn.Module):
         Executes multimodal prototype-guided VL-JEPA training step.
         """
         # Visual features
-        f1 = self.encoder(v1)
-        f2 = self.encoder(v2)
+        if self.freeze_backbone:
+            with torch.no_grad():
+                f1 = self.encoder(v1)
+                f2 = self.encoder(v2)
+        else:
+            f1 = self.encoder(v1)
+            f2 = self.encoder(v2)
 
         # Projected latents in text embedding space
         z1 = self.projector(f1)

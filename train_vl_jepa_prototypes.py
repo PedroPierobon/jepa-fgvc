@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     # Architecture & Vision Backbone
     parser.add_argument("--backbone", type=str, default="convnext_base", help="Backbone model architecture")
     parser.add_argument("--pretrained", type=lambda x: str(x).lower() in ("true", "1", "yes"), default=True, help="Initialize backbone with ImageNet pretrained weights")
+    parser.add_argument("--freeze_backbone", action="store_true", help="Freeze visual encoder backbone (train projector only)")
     parser.add_argument("--proj_hidden_dim", type=int, default=2048, help="Hidden dimension of MLP projector")
     parser.add_argument("--use_predictor", action="store_true", help="Use residual predictor head for cross-view similarity loss")
 
@@ -273,9 +274,21 @@ def main() -> None:
         print(f"AMP FP16: {args.amp} | World Size: {world_size}")
         print("=" * 80)
 
-    # 1. Dataset & DataLoader
+    # 1. Image Resolution and Normalization
+    is_pe_core = ("PE-Core" in args.backbone) or ("pe_core" in args.backbone)
+    if is_pe_core and args.img_size == 224:
+        args.img_size = 336
+        if is_main_process:
+            print("[*] Automatically setting img_size=336 for PE-Core backbone.")
+
+    norm_mean = (0.5, 0.5, 0.5) if is_pe_core else (0.485, 0.456, 0.406)
+    norm_std = (0.5, 0.5, 0.5) if is_pe_core else (0.229, 0.224, 0.225)
+
+    # Dataset & DataLoader
     train_transform = LeJEPADataTransform(
         img_size=args.img_size,
+        mean=norm_mean,
+        std=norm_std,
         grayscale_prob=args.grayscale_prob,
         spectral_ir_aug=args.spectral_ir_aug,
     )
@@ -287,7 +300,11 @@ def main() -> None:
         is_pretrain=True,
     )
 
-    eval_transform = get_eval_transform(img_size=args.img_size)
+    eval_transform = get_eval_transform(
+        img_size=args.img_size,
+        mean=norm_mean,
+        std=norm_std,
+    )
     val_dataset = UFPRDataset(
         root_dir=args.data_dir,
         split_fold=args.split_fold,
@@ -300,7 +317,7 @@ def main() -> None:
     taxonomy = VehicleTaxonomy(annotations_file)
 
     # 2. Text Prototypes Cache Management
-    cache_prototypes_path = output_dir / "text_prototypes_bank.pt"
+    cache_prototypes_path = output_dir / f"text_prototypes_bank_{Path(args.text_model).name}.pt"
     if is_distributed:
         if is_main_process:
             # Rank 0 builds and caches prototypes first to avoid concurrent downloads
@@ -320,6 +337,7 @@ def main() -> None:
         text_model_name=args.text_model,
         proj_hidden_dim=args.proj_hidden_dim,
         use_predictor=args.use_predictor,
+        freeze_backbone=args.freeze_backbone,
         lambd_sigreg=args.lambd,
         num_projections=args.num_projections,
         num_quadrature_nodes=args.num_quadrature_nodes,
@@ -353,7 +371,13 @@ def main() -> None:
     )
 
     # 4. Optimizer & AMP Scaler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if is_main_process:
+        num_trainable = sum(p.numel() for p in trainable_params)
+        num_total = sum(p.numel() for p in model.parameters())
+        print(f"[*] Trainable parameters: {num_trainable:,} / {num_total:,} ({100.0 * num_trainable / num_total:.2f}%)")
+
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay, betas=(0.9, 0.95))
     scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
 
     start_epoch = 1
@@ -500,10 +524,41 @@ def main() -> None:
                     )
                     print(f"[★] New best zero-shot exact accuracy: {best_exact_acc:.2f}%! Saved {best_path.name}\n")
 
-    # 6. Final Experiment Logging
+    # 6. Final Test Split Evaluation & Experiment Logging
     if is_main_process:
         total_time_min = (time.time() - total_start_time) / 60.0
         final_metrics = best_metrics if best_metrics else val_metrics
+
+        print("\n" + "=" * 80)
+        print(f"RUNNING FINAL TEST SPLIT EVALUATION (FOLD {args.split_fold})")
+        print("=" * 80)
+        test_dataset = UFPRDataset(
+            root_dir=args.data_dir,
+            split_fold=args.split_fold,
+            subset="test",
+            transform=eval_transform,
+            is_pretrain=False,
+        )
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=args.batch_size * 2,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
+        raw_model = model.module if hasattr(model, "module") else model
+        best_path = output_dir / "checkpoint_best.pth"
+        if best_path.exists():
+            ckpt = torch.load(best_path, map_location=device, weights_only=False)
+            raw_model.load_state_dict(ckpt["model_state_dict"])
+            print(f"[*] Loaded best checkpoint from epoch {ckpt.get('epoch', '?')} for test evaluation.")
+
+        test_metrics = evaluate_zero_shot(model, test_loader, taxonomy, device)
+        print(f"  Test Exact Tuple Acc:      {test_metrics['acc_exact_match']:6.2f}% (Invalid: {test_metrics['pct_invalid_total']:4.2f}%)")
+        print(f"  Test Marginal Acc:         {test_metrics['marginal_acc']:6.2f}%")
+        print(f"  Test Daylight (RGB) Exact: {test_metrics['rgb']['acc_exact']:6.2f}%")
+        print(f"  Test Infrared (IR) Exact:  {test_metrics['ir']['acc_exact']:6.2f}%")
+        print("=" * 80 + "\n")
 
         report_text = f"""================================================================================
 PROTOTYPE-GUIDED VL-JEPA EVALUATION REPORT
@@ -514,22 +569,23 @@ Epochs: {args.epochs} | Training Time: {total_time_min:.2f} minutes
 Final Loss: {avg_loss:.4f} | Proto Loss: {avg_proto:.4f} | Sim: {avg_sim:.4f} | SIGReg: {avg_sigreg:.4f}
 Spectral IR Augmentation: {args.spectral_ir_aug} | Grayscale Prob: {args.grayscale_prob}
 
-ZERO-SHOT TAXONOMIC PERFORMANCE (Valid Catalog = 225 Tuples):
+VAL ZERO-SHOT TAXONOMIC PERFORMANCE (Valid Catalog = 225 Tuples):
 --------------------------------------------------------------------------------
 Exact-Match Full-Tuple Accuracy:  {final_metrics.get('acc_exact_match', 0.0):6.2f}%
 Marginal Accuracy (Average):       {final_metrics.get('marginal_acc', 0.0):6.2f}%
   - Body Type Accuracy (14 cls):  {final_metrics.get('acc_type', 0.0):6.2f}%
   - Vehicle Make Accuracy (26 cls):{final_metrics.get('acc_make', 0.0):6.2f}%
   - Vehicle Model Accuracy (136): {final_metrics.get('acc_model', 0.0):6.2f}%
-
-TAXONOMIC CONSISTENCY & DOMAIN BREAKDOWN:
---------------------------------------------------------------------------------
-Invalid Full Tuples:              {final_metrics.get('pct_invalid_total', 0.0):6.2f}% (Enforced 0.00% by design)
-Invalid Make-Model Combinations:  {final_metrics.get('pct_invalid_make_model', 0.0):6.2f}%
-Invalid Model-Type Combinations:  {final_metrics.get('pct_invalid_model_type', 0.0):6.2f}%
-
 Daylight (Visible / RGB) Exact:   {final_metrics.get('rgb', {}).get('acc_exact', 0.0):6.2f}%
 Infrared (Nighttime / IR) Exact:  {final_metrics.get('ir', {}).get('acc_exact', 0.0):6.2f}%
+
+TEST ZERO-SHOT TAXONOMIC PERFORMANCE (OFFICIAL TEST SPLIT):
+--------------------------------------------------------------------------------
+Test Exact-Match Full-Tuple Acc:  {test_metrics.get('acc_exact_match', 0.0):6.2f}%
+Test Marginal Accuracy (Average): {test_metrics.get('marginal_acc', 0.0):6.2f}%
+Test Daylight (RGB) Exact:        {test_metrics.get('rgb', {}).get('acc_exact', 0.0):6.2f}%
+Test Infrared (IR) Exact:         {test_metrics.get('ir', {}).get('acc_exact', 0.0):6.2f}%
+Invalid Full Tuples:              {test_metrics.get('pct_invalid_total', 0.0):6.2f}% (Enforced 0.00% by design)
 ================================================================================
 """
         final_metrics_dict = dict(final_metrics)
@@ -541,6 +597,7 @@ Infrared (Nighttime / IR) Exact:  {final_metrics.get('ir', {}).get('acc_exact', 
             "training_time_min": total_time_min,
             "epochs": args.epochs,
             "spectral_ir_aug": args.spectral_ir_aug,
+            "test": test_metrics,
         })
 
         exp_name = f"vl_jepa_{args.backbone}_prototypes_fold{args.split_fold}"

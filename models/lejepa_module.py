@@ -23,6 +23,12 @@ try:
 except ImportError:
     HAS_TORCHVISION = False
 
+try:
+    import open_clip
+    HAS_OPEN_CLIP = True
+except ImportError:
+    HAS_OPEN_CLIP = False
+
 from .sigreg import SIGReg
 
 
@@ -101,6 +107,23 @@ class LeJEPAEncoder(nn.Module):
         self.backbone_name = backbone_name
         self.pretrained = pretrained
 
+        # 0. Try loading via open_clip (e.g. PE-Core-L-14-336, PE-Core-B-16)
+        if HAS_OPEN_CLIP and (
+            backbone_name.startswith("PE-Core")
+            or backbone_name.startswith("pe_core")
+            or "PE-Core" in backbone_name
+            or backbone_name in ["PE-Core-L-14-336", "PE-Core-B-16"]
+        ):
+            clip_model_name = "PE-Core-L-14-336" if ("L" in backbone_name or "336" in backbone_name) else "PE-Core-B-16"
+            clip_model, _, _ = open_clip.create_model_and_transforms(
+                clip_model_name,
+                pretrained="meta" if pretrained else None,
+            )
+            self.backbone = clip_model.visual
+            self.embed_dim = 1024 if ("L" in backbone_name or "336" in backbone_name) else 768
+            self.framework = "open_clip"
+            return
+
         # 1. Try loading via timm
         if HAS_TIMM:
             try:
@@ -174,6 +197,12 @@ class LeJEPAEncoder(nn.Module):
         if feat.ndim > 2:
             feat = feat.flatten(1)
         return feat
+
+    def freeze(self) -> None:
+        """Freezes all backbone parameters and sets eval mode."""
+        for p in self.parameters():
+            p.requires_grad = False
+        self.eval()
 
 
 class LeJEPA(nn.Module):
