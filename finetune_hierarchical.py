@@ -241,7 +241,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr_head", type=float, default=5e-4, help="Learning rate for classifier heads")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW")
     parser.add_argument("--epochs", type=int, default=30, help="Fine-tuning epochs")
-    parser.add_argument("--warmup_epochs", type=int, default=3, help="Linear warmup epochs")
+    parser.add_argument("--warmup_epochs", type=int, default=5, help="Linear warmup epochs (default: 5)")
     parser.add_argument("--amp", action="store_true", help="Enable automatic mixed precision (FP16)")
     parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument(
@@ -266,8 +266,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llrd_decay",
         type=float,
-        default=0.75,
-        help="Multiplicative layer-wise learning rate decay rate (default: 0.75)",
+        default=0.85,
+        help="Multiplicative layer-wise learning rate decay rate (default: 0.85)",
     )
     parser.add_argument(
         "--use_ema",
@@ -519,7 +519,18 @@ def main() -> None:
         ]
 
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    if args.warmup_epochs > 0:
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.05, total_iters=args.warmup_epochs
+        )
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, args.epochs - args.warmup_epochs), eta_min=1e-6
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[args.warmup_epochs]
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda") if (args.amp and device.type == "cuda") else None
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     w_type, w_make, w_model = args.loss_weights
