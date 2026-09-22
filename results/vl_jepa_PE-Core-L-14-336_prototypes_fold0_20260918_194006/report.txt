@@ -1,0 +1,27 @@
+================================================================================
+PROTOTYPE-GUIDED VL-JEPA EVALUATION REPORT
+================================================================================
+Dataset: UFPR-VeSV | Fold: 0 | Backbone: PE-Core-L-14-336
+Text Model: pe_core
+Epochs: 30 | Training Time: 179.28 minutes
+Final Loss: 1.2433 | Proto Loss: 0.6977 | Sim: 0.0579 | SIGReg: 0.2438
+Spectral IR Augmentation: True | Grayscale Prob: 0.4
+
+VAL ZERO-SHOT TAXONOMIC PERFORMANCE (Valid Catalog = 225 Tuples):
+--------------------------------------------------------------------------------
+Exact-Match Full-Tuple Accuracy:   64.58%
+Marginal Accuracy (Average):        82.58%
+  - Body Type Accuracy (14 cls):   90.15%
+  - Vehicle Make Accuracy (26 cls): 90.51%
+  - Vehicle Model Accuracy (136):  67.08%
+Daylight (Visible / RGB) Exact:    67.24%
+Infrared (Nighttime / IR) Exact:   54.79%
+
+TEST ZERO-SHOT TAXONOMIC PERFORMANCE (OFFICIAL TEST SPLIT):
+--------------------------------------------------------------------------------
+Test Exact-Match Full-Tuple Acc:   65.40%
+Test Marginal Accuracy (Average):  82.57%
+Test Daylight (RGB) Exact:         68.99%
+Test Infrared (IR) Exact:          51.96%
+Invalid Full Tuples:                0.00% (Enforced 0.00% by design)
+================================================================================

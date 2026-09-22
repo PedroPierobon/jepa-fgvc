@@ -49,3 +49,4 @@ timestamp,experiment_name,backbone,split_fold,epochs,marginal_acc,type_acc,make_
 20260918_123523,ft_convnext_recipe_fold0,convnext_base,0,50,92.31,95.74,93.34,87.84,84.89,3.27,2.07,0.99,88.36,71.87,results/ft_convnext_recipe_fold0_20260918_123523
 20260918_135357,ft_convnext_recipe_fold4,convnext_base,4,50,89.55,94.03,90.35,84.27,79.95,4.84,3.16,1.22,85.24,62.00,results/ft_convnext_recipe_fold4_20260918_135357
 20260918_150125,ft_convnext_recipe_fold9,convnext_base,9,50,89.69,93.90,90.66,84.52,80.35,4.53,2.96,1.45,85.88,61.55,results/ft_convnext_recipe_fold9_20260918_150125
+20260918_194006,vl_jepa_PE-Core-L-14-336_prototypes_fold0,PE-Core-L-14-336,0,30,82.58,90.15,90.51,67.08,64.58,0.00,0.00,0.00,67.24,54.79,results/vl_jepa_PE-Core-L-14-336_prototypes_fold0_20260918_194006
