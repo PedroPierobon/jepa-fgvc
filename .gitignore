@@ -33,3 +33,4 @@ extracted_embeddings/
 .vscode/
 *.swp
 *.swo
+*.log

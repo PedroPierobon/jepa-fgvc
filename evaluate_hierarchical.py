@@ -73,6 +73,15 @@ class VehicleTaxonomy:
 
         self.num_valid_tuples = len(self.valid_tuples_idx)
         self.valid_tuples_tensor = torch.tensor(list(self.valid_tuples_idx), dtype=torch.long)
+        self.sorted_valid_tuples = sorted(list(self.valid_tuples_idx))
+        self.tuple_to_idx = {t: idx for idx, t in enumerate(self.sorted_valid_tuples)}
+        self.idx_to_tuple = {idx: t for idx, t in enumerate(self.sorted_valid_tuples)}
+
+    def tuple_to_index(self, type_idx: int, make_idx: int, model_idx: int) -> int:
+        return self.tuple_to_idx.get((type_idx, make_idx, model_idx), -1)
+
+    def index_to_tuple(self, tuple_idx: int) -> Tuple[int, int, int]:
+        return self.idx_to_tuple[tuple_idx]
 
     def is_valid_tuple(self, type_idx: int, make_idx: int, model_idx: int) -> bool:
         return (type_idx, make_idx, model_idx) in self.valid_tuples_idx

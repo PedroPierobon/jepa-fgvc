@@ -18,7 +18,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -158,17 +158,25 @@ class HierarchicalClassifier(nn.Module):
         num_types: int = 14,
         num_makes: int = 26,
         num_models: int = 136,
+        direct_225: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = LeJEPAEncoder(backbone_name=backbone_name, pretrained=pretrained)
         self.embed_dim = self.encoder.embed_dim
+        self.direct_225 = direct_225
 
         # Load LeJEPA pre-trained encoder weights if provided
         if checkpoint_encoder_path and os.path.isfile(checkpoint_encoder_path):
             print(f"[*] Loading LeJEPA pretrained weights from: {checkpoint_encoder_path}")
             ckpt = torch.load(checkpoint_encoder_path, map_location="cpu", weights_only=False)
             if isinstance(ckpt, dict) and "encoder_state_dict" in ckpt:
-                self.encoder.load_state_dict(ckpt["encoder_state_dict"])
+                enc_dict = ckpt["encoder_state_dict"]
+                if any(k.startswith("backbone.") for k in enc_dict.keys()):
+                    self.encoder.load_state_dict(enc_dict, strict=False)
+                elif hasattr(self.encoder, "backbone"):
+                    self.encoder.backbone.load_state_dict(enc_dict, strict=False)
+                else:
+                    self.encoder.load_state_dict(enc_dict, strict=False)
             elif isinstance(ckpt, dict) and "model_state_dict" in ckpt:
                 encoder_keys = {
                     k.replace("encoder.", "").replace("module.encoder.", ""): v
@@ -184,13 +192,18 @@ class HierarchicalClassifier(nn.Module):
             print("[✓] Encoder successfully initialized from LeJEPA pre-trained representations!")
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.head_type = nn.Linear(self.embed_dim, num_types)
-        self.head_make = nn.Linear(self.embed_dim, num_makes)
-        self.head_model = nn.Linear(self.embed_dim, num_models)
+        if self.direct_225:
+            self.head_joint = nn.Linear(self.embed_dim, 225)
+        else:
+            self.head_type = nn.Linear(self.embed_dim, num_types)
+            self.head_make = nn.Linear(self.embed_dim, num_makes)
+            self.head_model = nn.Linear(self.embed_dim, num_models)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         feats = self.encoder(x)
         feats = self.dropout(feats)
+        if self.direct_225:
+            return self.head_joint(feats)
         return self.head_type(feats), self.head_make(feats), self.head_model(feats)
 
 
@@ -234,6 +247,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pretrained", action="store_true", help="Use ImageNet pretrained weights")
     parser.add_argument("--img_size", type=int, default=224, help="Input image resolution")
     parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate before classifier heads")
+    parser.add_argument(
+        "--direct_225",
+        action="store_true",
+        help="Use a single direct joint classification head for the 225 valid taxonomy classes instead of 3 decoupled heads",
+    )
 
     # Optimization
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
@@ -353,11 +371,23 @@ def evaluate_model(
 
     for images, meta in loader:
         images = images.to(device, non_blocking=True)
-        out_t, out_m, out_mo = raw_model(images)
-
-        all_pred_type.append(out_t.argmax(dim=-1).cpu())
-        all_pred_make.append(out_m.argmax(dim=-1).cpu())
-        all_pred_model.append(out_mo.argmax(dim=-1).cpu())
+        if getattr(raw_model, "direct_225", False):
+            out_joint = raw_model(images)
+            pred_indices = out_joint.argmax(dim=-1).cpu()
+            b_t, b_m, b_mo = [], [], []
+            for idx in pred_indices:
+                t, m, mo = taxonomy.index_to_tuple(idx.item())
+                b_t.append(t)
+                b_m.append(m)
+                b_mo.append(mo)
+            all_pred_type.append(torch.tensor(b_t))
+            all_pred_make.append(torch.tensor(b_m))
+            all_pred_model.append(torch.tensor(b_mo))
+        else:
+            out_t, out_m, out_mo = raw_model(images)
+            all_pred_type.append(out_t.argmax(dim=-1).cpu())
+            all_pred_make.append(out_m.argmax(dim=-1).cpu())
+            all_pred_model.append(out_mo.argmax(dim=-1).cpu())
 
         all_true_type.append(meta["target_type"].cpu())
         all_true_make.append(meta["target_make"].cpu())
@@ -466,6 +496,7 @@ def main() -> None:
         num_types=taxonomy.num_types,
         num_makes=taxonomy.num_makes,
         num_models=taxonomy.num_models,
+        direct_225=args.direct_225,
     ).to(device)
 
     # Warm-start full model (encoder + heads) if init_from_model is provided
@@ -506,16 +537,23 @@ def main() -> None:
             if is_main_process:
                 print(f"[*] LLRD Stage {lid}: {len(layer_params[lid])} parameter tensors | LR: {lr_layer:.2e} (scale: {scale:.4f})")
 
-        head_params = list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters())
+        if getattr(raw_model, "direct_225", False):
+            head_params = list(raw_model.head_joint.parameters())
+        else:
+            head_params = list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters())
         optimizer_grouped_parameters.append({
             "params": head_params,
             "lr": args.lr_head,
             "weight_decay": args.weight_decay,
         })
     else:
+        if getattr(raw_model, "direct_225", False):
+            head_params = list(raw_model.head_joint.parameters())
+        else:
+            head_params = list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters())
         optimizer_grouped_parameters = [
             {"params": raw_model.encoder.parameters(), "lr": args.lr_backbone},
-            {"params": list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters()), "lr": args.lr_head},
+            {"params": head_params, "lr": args.lr_head},
         ]
 
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
@@ -561,8 +599,17 @@ def main() -> None:
             y_m = meta["target_make"].to(device)
             y_mo = meta["target_model"].to(device)
             optimizer.zero_grad()
-            out_t, out_m, out_mo = model(images)
-            loss = w_type * criterion(out_t, y_t) + w_make * criterion(out_m, y_m) + w_model * criterion(out_mo, y_mo)
+            if getattr(raw_model, "direct_225", False):
+                y_tuple = torch.tensor(
+                    [taxonomy.tuple_to_index(t.item(), m.item(), mo.item()) for t, m, mo in zip(y_t, y_m, y_mo)],
+                    device=device,
+                    dtype=torch.long,
+                )
+                out_joint = model(images)
+                loss = criterion(out_joint, y_tuple)
+            else:
+                out_t, out_m, out_mo = model(images)
+                loss = w_type * criterion(out_t, y_t) + w_make * criterion(out_m, y_m) + w_model * criterion(out_mo, y_mo)
             loss.backward()
             optimizer.step()
             if model_ema is not None:
@@ -594,30 +641,53 @@ def main() -> None:
 
             optimizer.zero_grad()
 
-            if args.amp and device.type == "cuda":
-                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+            if getattr(raw_model, "direct_225", False):
+                y_tuple = torch.tensor(
+                    [taxonomy.tuple_to_index(t.item(), m.item(), mo.item()) for t, m, mo in zip(y_t, y_m, y_mo)],
+                    device=device,
+                    dtype=torch.long,
+                )
+                if args.amp and device.type == "cuda":
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                        out_joint = model(images)
+                        loss = criterion(out_joint, y_tuple)
+                    scaler.scale(loss).backward()
+                    if args.clip_grad > 0 if hasattr(args, "clip_grad") else True:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    out_joint = model(images)
+                    loss = criterion(out_joint, y_tuple)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                    optimizer.step()
+            else:
+                if args.amp and device.type == "cuda":
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                        out_t, out_m, out_mo = model(images)
+                        loss = (
+                            w_type * criterion(out_t, y_t)
+                            + w_make * criterion(out_m, y_m)
+                            + w_model * criterion(out_mo, y_mo)
+                        )
+
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
                     out_t, out_m, out_mo = model(images)
                     loss = (
                         w_type * criterion(out_t, y_t)
                         + w_make * criterion(out_m, y_m)
                         + w_model * criterion(out_mo, y_mo)
                     )
-
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                out_t, out_m, out_mo = model(images)
-                loss = (
-                    w_type * criterion(out_t, y_t)
-                    + w_make * criterion(out_m, y_m)
-                    + w_model * criterion(out_mo, y_mo)
-                )
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
-                optimizer.step()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+                    optimizer.step()
 
             if model_ema is not None:
                 model_ema.update(model)

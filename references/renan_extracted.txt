@@ -1,0 +1,256 @@
+--- PAGE 1 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 1
+UNIVERSIDADE FEDERAL DO PARANÁ (UFPR)
+DEPARTAMENTO DE INFORMÁTICA (DInf)
+IPASP-PR PROJECT
+Scholarship Holder Quarterly Activities Report
+Report Number: 2, Period: Quarter 3rd / Year: 2026
+1 Scholarship Holder Identification and Research Line
+Student Name:Renan Akira N. G. Escribano
+Academic Level:□Undergrad (PIBIC)□Undergrad (BTNM)□MSc Student
+⊠PhD Student□Postdoc
+Advisor:Luiz Eduardo Soares de Oliveira
+Primary Subarea:□Module 1: License Plate Detection (LPR Detection)
+□Module 2: License Plate Legibility Classification (LPLC) and
+License Plate Super-Resolution (LPSR)
+□Module 3: Character Recognition (LPR Recognition)
+□Module 4: Fine-Grained Vehicle Classification (FGVC)
+⊠Module 5: Systems Integration and Infrastructure
+□Module 6: Facial / Ocular Recognition
+2 Executive Summary of Activities
+This quarter addressed thehierarchy problemin fine-grained vehicle classification on the pro-
+ject dataset UFPR-VeSV: a prediction is only usable for retrieval whentype,makeandmodel
+aresimultaneouslycorrect, which independent per-task heads do not guarantee. Two soluti-
+ons were consolidated: Hierarchical Constrained Decoding (HCD), a training-free step that
+restricts the decision to the 225 tuples observed in the project ontology, and joint-class promp-
+ting, which replaces the three marginal prompt banks of a vision-language model (VLM) by
+a single 225-way prompt.
+On eight supervised backbones, HCD raised simultaneous accuracy by+2.86to+10.10
+percentage points (pp) without breaking an already-correct triplet. On 16 zero-shot VLMs
+over the same five folds, the joint prompt beat paired HCD in only three backbones and lost
+in the other thirteen, so the decoder must be chosen per backbone. Supervising the joint
+head changes the regime: visual LoRA reached 94.78% (PE-Core-bigG) and 93.93% (SigLIP2-
+gopt), at 51k and 300k images/h on one RTX A5000. Confidence wasmeasured, not assumed:
+calibrated HCD lowered the expected calibration error (ECE) on the six stronger supervised
+backbones, but on the zero-shot VLMs it improved test negative log-likelihood (NLL) in all
+16 while improving ECE in only 8. Temperature scaling brought the tuned LoRA checkpoints
+to0.85–1.66% ECE, the best accuracy/calibration combination obtained so far.
+Renan Akira N. G. Escribano Setembro/2026
+
+--- PAGE 2 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 2
+3 Technical Progress and Methodology
+3.1 Methodology and Implementation
+Task, data and metric.UFPR-VeSV contains 24,945 images of 16,297 vehicles/plates
+(19,573 visible, 5,372 infrared, IR) labelled with 14type, 26makeand 136modelclasses. Of
+the 49,504 Cartesian combinations only225 tuplesoccur, making the label space a two-
+level hierarchy [4, 5] under the surveillance conditions also reported for vehicle colour in [9].
+The metric throughout issimultaneous accuracy(all three attributes correct on the same
+image),notthe average of the three marginal accuracies. We use the five canonical folds
+0..4once each, with train/val/test separated by plate; the tables report absolute results
+(mean±standard deviation over the folds), without significance testing at this stage.
+HCD: constrained decoding of marginals.Given the three marginal logit vectors for
+an imagex, raw HCD scores every admissible tupleτ∈T,|T|= 225, and keeps the best one:
+s(τ|x) =z type
+τtype +z make
+τmake +z model
+τmodel,ˆτ= arg max
+τ∈T
+s(τ|x).(1)
+This applies the label-relation constraint of [4] as pure post-processing — no retraining and
+no extra visual forward pass, unlike consistency-aware training [5]. The calibrated variant
+HCD-Cfits two relative task weights and one joint temperature on thevalidationsplit of
+each fold by NLL; the temperature alone cannot change theargmax, but the weights can.
+Joint 225-class prompting.For each valid tuple we build five textual descriptions,
+average their text embeddings and compare the image against the resulting 225 class vectors.
+Sixteen public checkpoints were evaluated zero-shot through OpenCLIP [2]: CLIP [10], Si-
+gLIP 1/2 [14, 11], PE-Core [1] and MetaCLIP 2 [3]. Each image is encodedonceand the
+same visual embedding feeds both the marginal banks (then HCD) and the joint bank, so the
+two decisions are paired by checkpoint, image, pre-processing, fold and ontology; the usual
+“3×cheaper” argument for joint classification therefore doesnotapply here.
+Supervised joint head and calibration protocol.Four backbones were also adapted
+to the 225 classes on the same folds (ten epochs, training ontrain, evaluation ontest):
+CoOp [15] with 16 shared context tokens and frozen visual tower, and visual LoRA [7] with
+rank 16,α= 32, Q/V adaptation, batch 64 and frozen text tower. ECE is measured on
+the top-1 confidence of thecomplete tupleover 15 equal-width bins [8], and temperature
+scaling (TS) [6] and HCD-C were fittedonlyon validation. Since both objectives are NLL
+and neither minimises ECE directly [12], ECE is reported as measured, with NLL as the
+complementary criterion.
+3.2 Experimental Results and Discussion
+HCD on supervised backbones.In Table 1 the gain grows with the amount of hierarchi-
+cally inconsistent output: 6.65% of the EfficientNet predictions and 33.00% of the YOLO11n
+predictions violate the ontology, and HCD rescued 750 and 2,539 cases withzero correct
+triplets broken. For an EfficientNet trained multi-task with hierarchical regularisation the
+inconsistency rate is already 1.26% and HCD adds only+0.48pp (89.10→89.58%), bounding
+the benefit expected from consistency-aware training.
+Zero-shot: joint prompt versus HCD.Table 2 reports the five best of the 16 VLMs.
+The marginal→HCD jump is very large (19.67→77.32% on SigLIP2-gopt): the marginal
+banks of a VLM are individually usable but jointly incoherent. The joint prompt wins only on
+Renan Akira N. G. Escribano Setembro/2026
+
+--- PAGE 3 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 3
+Tabela 1: HCD as post-processing on supervised single-task backbones (simultaneous accu-
+racy). ResNet-50 (+2.97pp) and YOLO11s (+9.70pp) omitted for space.
+Backbone Marginal + HCD Gain (pp)
+EfficientNet 86.25%89.25%+2.86
+Swin-T 86.35%89.27%+2.91
+ResNet-101 85.55%88.77%+3.17
+ViT 83.62%87.09%+3.45
+MobileNet 74.58%80.25%+5.67
+YOLO11n 44.35%54.53%+10.10
+SigLIP2-gopt (+1.35pp), on PE-Core-L (+0.21pp) and, outside the top five, on MetaCLIP2-
+bigG (+1.61pp); on the other 13 backbones HCD wins, by up to−13.68pp. On the IR
+subgroup (5,372 images, 4,617 plates) the advantage vanishes: SigLIP2-gopt scores 69.43%
+either way, while PE-Core-bigG (−1.22pp) and SigLIP2-L (−4.05pp) are better with HCD,
+so the global advantage of the joint prompt must not be extrapolated to IR.
+Tabela 2: Zero-shot comparison paired by image, five best of 16 VLMs (simultaneous accuracy,
+%). HCD uses equal weights.∆= direct−HCD, in pp.
+Backbone Marginal + HCD Direct 225∆(pp)
+SigLIP2-gopt/16 19.67 77.3278.66±0.30+1.35
+PE-Core-bigG/14-448 51.4375.7074.42±0.55−1.28
+SigLIP2-L/16 55.9673.5567.05±0.47−6.49
+SigLIP2-SO400M/16 38.3773.0169.99±0.54−3.02
+PE-Core-L/14-336 54.87 71.7471.96±0.61+0.21
+Supervising the joint head, and the cost frontier.Training the joint classifier
+changes the scale of the results (Table 3): LoRA is the best regime tested on all four backbones,
++15.27to+24.28pp over the zero-shot joint classifier of thesamebackbone. The best zero-
+shot backbone is not the one that responds best to adaptation: PE-Core-bigG overtakes
+SigLIP2-gopt after tuning. Throughput sets the practical frontier: SigLIP2-SO400M-LoRA
+trades about 10% of the measured end-to-end throughput of SigLIP2-L-LoRA for+1.37pp,
+whereas PE-Core-bigG-LoRA buys the last+0.85pp over SigLIP2-gopt-LoRA at roughly
+5.9×the GPU time per image at batch 8 (854 versus 5,005 images/minute).
+Tabela 3: Joint 225-class classifier with CoOp and LoRA (simultaneous accuracy, %;∆in pp
+against the zero-shot joint classifier of the same backbone). Throughput: LoRA checkpoint,
+one RTX A5000, FP16, batch 8, fold 0; “GPU” excludes JPEG decoding, “JPEG→score” is
+the serial pipeline over 400 real JPEGs;∼marks projections.
+Backbone Zero-shot CoOp (∆) LoRA (∆) LoRA, images/h
+direct GPU JPEG→score
+PE-Core-bigG 74.42 91.41±0.93 (+16.99)94.78±0.48(+20.36) 51,240∼43,620
+SigLIP2-gopt 78.66 79.92±0.68 (+1.25)93.93±0.68(+15.27) 300,300∼170,040
+SigLIP2-SO400M 69.99 71.93±0.90 (+1.95)92.71±0.81(+22.72) 702,564 242,364
+SigLIP2-L 67.05 74.54±0.29 (+7.48)91.33±0.95(+24.28) 976,890 267,720
+Renan Akira N. G. Escribano Setembro/2026
+
+--- PAGE 4 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 4
+3.3 Confidence Calibration
+Supervised reference.On the historical suite, HCD-C reduced test ECE on the six stronger
+backbones (EfficientNet6.02→1.08%, Swin-T6.10→1.07%, ResNet-1015.94→0.84%, ViT
+6.99→0.90%) but not on the two detectors (YOLO11n3.97→5.98%), where raw HCD was
+already the best-calibrated variant even though NLL/Brier still favour HCD-C. The joint
+NLL ladder is consistent: EfficientNet0.7740(raw marginal product)→0.5843(raw HCD)
+→0.4150(HCD-C), and Swin-T0.7768→0.6078→0.3969.
+Zero-shot VLMs.Closing the 80 missing validation runs (16 models×5 folds) gives a
+differentpicture(Table4). Direct+TSisbettercalibratedthanHCD-Cinall16backbonesand
+improves on the raw direct classifier in 13 of them; the three exceptions (SigLIP2-L, SigLIP1-
+L, CLIP-bigG) are precisely the backbones whose raw joint confidence was already closest to
+calibrated, and TS was fitted for NLL, not for ECE. HCD-C reduced ECE against raw HCD
+in only8 of 16backbones while reducing test NLL inall 16(SigLIP2-gopt: NLL1.31→1.06
+with ECE5.96→9.47%; SigLIP2-SO400M: NLL1.47→1.21with ECE5.79→9.22%).
+Reweighting the tasks also moves theargmax, so global top-1 calibration does not follow the
+multiclass NLL objective. This does not establish a general superiority of the direct classifier,
+since its accuracy differs from that of HCD-C and tail/IR confidence was not re-evaluated
+here.
+Tabela 4: Joint test ECE (%, 15 bins, mean over the five folds), five best zero-shot VLMs.
+“HCD+TS” applies one temperature to the joint score without changing the decision; HCD-C
+also fits two task weights and can change it (distinct fits).
+Backbone Direct raw Direct+TS HCD raw HCD+TS HCD-C
+SigLIP2-gopt/16 6.153.565.96 11.55 9.47
+PE-Core-bigG/14-448 14.862.344.38 10.98 9.41
+SigLIP2-L/162.712.77 6.49 9.67 7.52
+SigLIP2-SO400M/16 9.973.975.79 13.97 9.22
+PE-Core-L/14-336 14.982.774.33 14.16 11.61
+Tuned joint classifiers.The LoRA checkpoints are the only configuration that is si-
+multaneously the most accurate and the best calibrated (Table 5): raw ECE of1.02–2.54%,
+falling to0.85–1.66% with a single temperature. CoOp insteaddegradesraw calibration with
+respect to its own zero-shot starting point (SigLIP2-gopt6.15→17.30%, SigLIP2-SO400M
+9.97→16.38%), which TS largely repairs. HCD-C does not apply to these checkpoints, since
+CoOp/LoRA produce 225-way joint logits rather than three adjustable marginal banks.
+Tabela 5: Joint test ECE (%, mean over the five folds) of the eight tuned checkpoints.
+Backbone CoOp raw CoOp+TS LoRA raw LoRA+TS
+PE-Core-bigG 5.361.581.020.85
+SigLIP2-gopt 17.303.462.491.07
+SigLIP2-SO400M 16.383.962.191.06
+SigLIP2-L 11.682.532.541.66
+Challenges and risks.The supervised HCD study decodes over the≈222 tuples of
+train+valof each fold whereas the VLM experiments use the fixed catalogue of 225: the
+protocols are comparable but not identical and are never merged into one paired experiment.
+End-to-end throughput for SigLIP2-gopt and PE-Core-bigG is still a projection and no batch-
+Renan Akira N. G. Escribano Setembro/2026
+
+--- PAGE 5 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 5
+1 latency exists yet. Aggregate ECE is bin-dependent and does not prove calibration per
+modality, viewpoint or tail class.
+4 Quarterly Deliverables and Products
+4.1 Source Code and Repositories
+•Repository URL (GitHub):not yet published; the code is kept in the internal
+working tree and will be migrated tohttps://github.com/UFPR-IPASP-PR/once the
+ontology and protocol are frozen.Commit ID / Tag:not applicable.
+•Artefacts produced this quarter:zero-shot joint evaluator and auditable prompt
+bank (16 models×5 folds); CoOp/LoRA queue for the 225 classes (4 models×2
+methods×5 folds); calibration pipeline (TS/HCD-C over 96 zero-shot variants and 8
+tuned checkpoints); inference benchmark.
+•Code Status:[x] Prototype [x] Tested/Validated [ ] Integrated into Main System
+4.2 Scientific Publications
+No publication was submitted, accepted or published in this quarter. The results of Secti-
+ons 3.2 and 3.3 are being organised into a manuscript comparing constrained decoding with
+joint-class prompting, with the calibration analysis as a second contribution; submission is
+planned for the next period. Related work from the other modules is reported in [9, 13].
+5 Planning for the Next Period
+1.Conditional calibration:ECE, NLL and reliability diagrams for the eight tuned
+checkpoints by modality (IR/visible), viewpoint and tail classes.
+2.Statistical validation:paired, plate-clustered comparisons for the decoder choice and
+for the PE-Core-bigG/SigLIP2-gopt gap, now reported as absolute values only.
+3.Complete the cost measurements:integral JPEG→score throughput for SigLIP2-
+gopt/PE-Core-bigG, batch-1 latency.
+4.Hierarchy-aware calibration of the joint head:HCD-C-style reweighting of mar-
+ginals derived from the 225-way posterior, versus vector scaling.
+5.Freezetheontology, publishtherepository(per-foldconfigurations, prompts, logs)
+and draft the manuscript.
+Curitiba, 28 of September, 2026.
+Student Signature Advisor Signature
+Renan Akira N. G. Escribano Setembro/2026
+
+--- PAGE 6 ---
+IPASP-PR: Instituto de Pesquisa Aplicada em Segurança Pública do Paraná 6
+Referências
+[1] D. Bolya, P.-Y. Huang, P. Sun, J. H. Cho, A. Madotto, et al. Perception encoder: The best visual
+embeddings are not at the output of the network.arXiv preprint arXiv:2504.13181, 2025.
+[2] M. Cherti, R. Beaumont, R. Wightman, M. Wortsman, G. Ilharco, C. Gordon, C. Schuhmann, L. Sch-
+midt, and J. Jitsev. Reproducible scaling laws for contrastive language-image learning. InIEEE/CVF
+Conference on Computer Vision and Pattern Recognition (CVPR), pages 2818–2829, 2023.
+[3] Y.-S. Chuang, Y. Li, D. Wang, C.-F. Yeh, K. Lyu, R. Raghavendra, et al. MetaCLIP 2: A worldwide
+scaling recipe. InAdvances in Neural Information Processing Systems (NeurIPS), 2025. arXiv:2507.22062.
+[4] J. Deng, N. Ding, Y. Jia, A. Frome, K. Murphy, S. Bengio, Y. Li, H. Neven, and H. Adam. Large-scale
+object classification using label relation graphs. InEuropean Conference on Computer Vision (ECCV),
+pages 48–64, 2014.
+[5] E. Giunchiglia and T. Lukasiewicz. Coherent hierarchical multi-label classification networks. InAdvances
+in Neural Information Processing Systems (NeurIPS), pages 9662–9673, 2020.
+[6] C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger. On calibration of modern neural networks. In
+International Conference on Machine Learning (ICML), pages 1321–1330, 2017.
+[7] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen. LoRA: Low-rank
+adaptation of large language models. InInternational Conference on Learning Representations (ICLR),
+2022.
+[8] M. P. Naeini, G. F. Cooper, and M. Hauskrecht. Obtaining well calibrated probabilities using bayesian
+binning. InAAAI Conference on Artificial Intelligence, pages 2901–2907, 2015.
+[9] V. Orrú, B. Foggiatto, G. E. Lima, D. Menotti, and R. Laroca. Revisiting vehicle color recognition in
+long-tailed surveillance scenarios. InInternational Conference on Pattern Recognition (ICPR) – V3SC
+Workshop, pages 1–15, Aug 2026.
+[10] A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, et al. Learning transferable visual
+models from natural language supervision. InInternational Conference on Machine Learning (ICML),
+pages 8748–8763, 2021.
+[11] M. Tschannen, A. Gritsenko, X. Wang, M. F. Naeem, I. Alabdulmohsin, et al. SigLIP 2: Multilingual
+vision-language encoders with improved semantic understanding, localization, and dense features.arXiv
+preprint arXiv:2502.14786, 2025.
+[12] W. Tu, W. Deng, D. Campbell, S. Gould, and T. Gedeon. An empirical study into what matters for
+calibrating vision-language models. InInternational Conference on Machine Learning (ICML), 2024.
+[13] L. Wojcik, E. A. F. Machoski, E. Nascimento Jr., R. Laroca, and D. Menotti. LPLCv2: An expanded
+dataset for fine-grained license plate legibility classification. InInternational Joint Conference on Neural
+Networks (IJCNN), pages 1–7, 2026.
+[14] X. Zhai, B. Mustafa, A. Kolesnikov, and L. Beyer. Sigmoid loss for language image pre-training. In
+IEEE/CVF International Conference on Computer Vision (ICCV), pages 11975–11986, 2023.
+[15] K. Zhou, J. Yang, C. C. Loy, and Z. Liu. Learning to prompt for vision-language models.International
+Journal of Computer Vision (IJCV), 130(9):2337–2348, 2022.
+Renan Akira N. G. Escribano Setembro/2026
