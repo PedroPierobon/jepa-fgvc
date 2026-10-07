@@ -159,11 +159,17 @@ class HierarchicalClassifier(nn.Module):
         num_makes: int = 26,
         num_models: int = 136,
         direct_225: bool = False,
+        img_size: int = 224,
+        frozen_probe: bool = False,
     ) -> None:
         super().__init__()
-        self.encoder = LeJEPAEncoder(backbone_name=backbone_name, pretrained=pretrained)
+        self.encoder = LeJEPAEncoder(backbone_name=backbone_name, pretrained=pretrained, img_size=img_size)
         self.embed_dim = self.encoder.embed_dim
         self.direct_225 = direct_225
+        self.frozen_probe = frozen_probe
+        if frozen_probe:
+            print("[*] Frozen Probe Mode: Freezing all backbone encoder weights!")
+            self.encoder.freeze()
 
         # Load LeJEPA pre-trained encoder weights if provided
         if checkpoint_encoder_path and os.path.isfile(checkpoint_encoder_path):
@@ -251,6 +257,11 @@ def parse_args() -> argparse.Namespace:
         "--direct_225",
         action="store_true",
         help="Use a single direct joint classification head for the 225 valid taxonomy classes instead of 3 decoupled heads",
+    )
+    parser.add_argument(
+        "--frozen_probe",
+        action="store_true",
+        help="Freeze backbone encoder and only train classifier heads (Frozen Linear Probe)",
     )
 
     # Optimization
@@ -497,6 +508,8 @@ def main() -> None:
         num_makes=taxonomy.num_makes,
         num_models=taxonomy.num_models,
         direct_225=args.direct_225,
+        img_size=args.img_size,
+        frozen_probe=args.frozen_probe,
     ).to(device)
 
     # Warm-start full model (encoder + heads) if init_from_model is provided
@@ -551,10 +564,17 @@ def main() -> None:
             head_params = list(raw_model.head_joint.parameters())
         else:
             head_params = list(raw_model.head_type.parameters()) + list(raw_model.head_make.parameters()) + list(raw_model.head_model.parameters())
-        optimizer_grouped_parameters = [
-            {"params": raw_model.encoder.parameters(), "lr": args.lr_backbone},
-            {"params": head_params, "lr": args.lr_head},
-        ]
+
+        if args.frozen_probe:
+            optimizer_grouped_parameters = [
+                {"params": head_params, "lr": args.lr_head},
+            ]
+        else:
+            encoder_params = [p for p in raw_model.encoder.parameters() if p.requires_grad]
+            optimizer_grouped_parameters = [
+                {"params": encoder_params, "lr": args.lr_backbone},
+                {"params": head_params, "lr": args.lr_head},
+            ]
 
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, weight_decay=args.weight_decay)
     if args.warmup_epochs > 0:

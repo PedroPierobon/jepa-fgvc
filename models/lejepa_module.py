@@ -91,10 +91,22 @@ class MLPPredictor(nn.Module):
         return x + self.net(x)
 
 
+BACKBONE_ALIASES = {
+    "dinov3": "vit_large_patch16_dinov3.lvd1689m",
+    "dinov3_base": "vit_base_patch16_dinov3",
+    "dinov2": "vit_base_patch14_dinov2",
+    "convnext": "convnext_base",
+    "efficientnet_v2": "tf_efficientnetv2_m.in21k_ft_in1k",
+    "depth_anything_v2": "depth-anything/Depth-Anything-V2-Base-hf",
+    "depthanythingv2": "depth-anything/Depth-Anything-V2-Base-hf",
+    "depth_anything": "depth-anything/Depth-Anything-V2-Base-hf",
+}
+
+
 class LeJEPAEncoder(nn.Module):
     """
     Unified visual encoder supporting modern backbones from timm and torchvision
-    (e.g., EfficientNet-V2, Swin-V2, ConvNeXt, ViT-Base, ResNet-50).
+    (e.g., EfficientNet-V2, Swin-V2, ConvNeXt, ViT-Base, ResNet-50, DINOv2, DINOv3, DepthAnything-V2).
     """
 
     def __init__(
@@ -102,12 +114,28 @@ class LeJEPAEncoder(nn.Module):
         backbone_name: str = "vit_base_patch16_224",
         pretrained: bool = False,
         in_chans: int = 3,
+        img_size: int = 224,
     ) -> None:
         super().__init__()
+        # Resolve aliases
+        backbone_name = BACKBONE_ALIASES.get(backbone_name.lower(), backbone_name)
         self.backbone_name = backbone_name
         self.pretrained = pretrained
+        self.img_size = img_size
 
-        # 0. Try loading via open_clip (e.g. PE-Core-L-14-336, PE-Core-B-16)
+        # 0. Try loading Depth Anything v2
+        if "depth_anything" in backbone_name.lower() or "depth-anything" in backbone_name.lower():
+            from transformers import AutoModelForDepthEstimation
+            hf_model_id = (
+                backbone_name if "/" in backbone_name else "depth-anything/Depth-Anything-V2-Base-hf"
+            )
+            full_model = AutoModelForDepthEstimation.from_pretrained(hf_model_id)
+            self.backbone = full_model.backbone
+            self.embed_dim = 1536  # [CLS] (768) + GAP (768)
+            self.framework = "depth_anything_v2"
+            return
+
+        # 0.1 Try loading via open_clip (e.g. PE-Core-L-14-336, PE-Core-B-16)
         if HAS_OPEN_CLIP and (
             backbone_name.startswith("PE-Core")
             or backbone_name.startswith("pe_core")
@@ -132,12 +160,24 @@ class LeJEPAEncoder(nn.Module):
                     pretrained=pretrained,
                     num_classes=0,  # Remove classifier head for feature pooling
                     in_chans=in_chans,
+                    img_size=img_size,
                 )
                 self.embed_dim = self._get_backbone_dim()
                 self.framework = "timm"
                 return
             except Exception:
-                pass
+                try:
+                    self.backbone = timm.create_model(
+                        backbone_name,
+                        pretrained=pretrained,
+                        num_classes=0,
+                        in_chans=in_chans,
+                    )
+                    self.embed_dim = self._get_backbone_dim()
+                    self.framework = "timm"
+                    return
+                except Exception:
+                    pass
 
         # 2. Fallback to torchvision
         if HAS_TORCHVISION and hasattr(tv_models, backbone_name):
@@ -191,6 +231,13 @@ class LeJEPAEncoder(nn.Module):
             return feat.shape[-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if getattr(self, "framework", "") == "depth_anything_v2":
+            out = self.backbone(x)
+            feats = out.feature_maps[-1]
+            cls_tok = feats[:, 0, :]
+            gap = feats[:, 1:, :].mean(dim=1)
+            return torch.cat([cls_tok, gap], dim=-1)
+
         feat = self.backbone(x)
         if isinstance(feat, (tuple, list)):
             feat = feat[0]

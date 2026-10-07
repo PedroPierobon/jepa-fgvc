@@ -1,0 +1,7 @@
+backbone,family,frozen_probe,direct_hcd,direct_225,lejepa,lejepa_hcd,lejepa_225
+ConvNeXt-Base,Modern Pure CNN,,,,82.48,82.48,85.1
+EfficientNet-V2,CNN (MBConv),,,,81.66,81.66,
+ResNet-50,CNN Clássica,,,,,,
+DINOv2 (ViT-B/14),2D Foundation SSL,,,,,,
+DINOv3 (ViT-L/16),SOTA 2D Foundation,,,,,,
+DepthAnything-v2,3D-Aware Foundation,,,,,,
